@@ -498,12 +498,27 @@ def cmd_migrate(args):
         rename_tools[old.strip()] = new.strip()
 
     set_model = getattr(args, "set_model", None)
+    strip_pii = getattr(args, "strip_pii", None) or []
+
+    import re as _re
     lines = [l for l in p.read_text().splitlines() if l.strip()]
     transformed = 0
+    redactions = 0
+
+    def _redact(text: str) -> str:
+        nonlocal redactions
+        for pat in strip_pii:
+            result, count = _re.subn(pat, "[REDACTED]", text)
+            redactions += count
+            text = result
+        return text
 
     out_lines = []
     for line in lines:
         data = json.loads(line)
+        if "_meta" in data:
+            out_lines.append(line)
+            continue
         req = data.get("request", {})
         resp = data.get("response", {})
 
@@ -516,13 +531,28 @@ def cmd_migrate(args):
             req["model"] = new
             resp["model"] = new
 
-        # Rename tools in response choices
+        # Rename tools in response choices / redact args
         for choice in resp.get("choices", []):
             for tc in (choice.get("message", {}).get("tool_calls") or []):
                 old = tc.get("function", {}).get("name", "")
                 if old in rename_tools:
                     tc["function"]["name"] = rename_tools[old]
                     transformed += 1
+                if strip_pii and tc.get("function", {}).get("arguments"):
+                    tc["function"]["arguments"] = _redact(tc["function"]["arguments"])
+
+        # Rename tools / redact in Anthropic format
+        for block in (resp.get("content") or []):
+            if block.get("type") == "tool_use":
+                if block.get("name") in rename_tools:
+                    block["name"] = rename_tools[block["name"]]
+                    transformed += 1
+                if strip_pii and block.get("input"):
+                    inp_str = _redact(json.dumps(block["input"]))
+                    try:
+                        block["input"] = json.loads(inp_str)
+                    except json.JSONDecodeError:
+                        block["input"] = inp_str
 
         # Rename tools in request tools list
         for tool in req.get("tools", []):
@@ -537,7 +567,8 @@ def cmd_migrate(args):
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(out_lines) + "\n")
-    print(f"agentprobe: migrated {len(lines)} call(s) to {out_path}  ({transformed} tool rename(s))")
+    pii_note = f"  ({redactions} redaction(s))" if redactions else ""
+    print(f"agentprobe: migrated {len(lines)} call(s) to {out_path}  ({transformed} tool rename(s)){pii_note}")
 
 
 def cmd_validate(args):
@@ -906,6 +937,44 @@ def cmd_compare_score(args):
             print("  Moderate differences — review before merging.")
         else:
             print("  Significant differences — fixtures may represent different agent behaviors.")
+
+
+def cmd_fixtures_by_age(args):
+    """List fixture files older than N days (by _meta.recorded_at)."""
+    from datetime import datetime, timezone
+    directory = Path(args.directory)
+    if not directory.is_dir():
+        print(f"agentprobe: not a directory: {args.directory}", file=sys.stderr)
+        sys.exit(1)
+
+    age_days = args.age_days
+    now = datetime.now(timezone.utc)
+    fixtures = sorted(directory.rglob("*.jsonl")) + sorted(directory.rglob("*.jsonl.gz"))
+    old_fixtures = []
+    for f in fixtures:
+        meta = _load_meta(str(f))
+        recorded = meta.get("recorded_at", "")
+        if not recorded:
+            continue
+        try:
+            ts = datetime.fromisoformat(recorded.replace("Z", "+00:00"))
+            age = (now - ts).days
+            if age >= age_days:
+                old_fixtures.append({"file": str(f), "age_days": age, "recorded_at": recorded})
+        except ValueError:
+            continue
+
+    if not old_fixtures:
+        print(f"agentprobe: no fixtures older than {age_days} day(s) found in {args.directory}")
+        return
+
+    if getattr(args, "json", False):
+        print(json.dumps(old_fixtures, indent=2))
+    else:
+        print(f"Fixtures older than {age_days} day(s) in {args.directory}:\n")
+        for entry in old_fixtures:
+            print(f"  {entry['file']}  ({entry['age_days']} days, recorded {entry['recorded_at'][:10]})")
+        print(f"\n{len(old_fixtures)} fixture(s)")
 
 
 def cmd_fixtures_by_label(args):
@@ -1387,11 +1456,14 @@ def main():
                         help="Print a one-line summary (calls, tokens, tools) per fixture")
     p_list.add_argument("--label", metavar="TAG",
                         help="List fixtures that have this label in their _meta header")
+    p_list.add_argument("--age-days", dest="age_days", type=int, metavar="N",
+                        help="List fixtures older than N days (by _meta.recorded_at)")
     p_list.set_defaults(func=lambda a: cmd_fixtures_clean(a) if a.clean else (
         cmd_stats_by_date(a) if a.by_date else (
         cmd_fixtures_orphaned(a) if a.orphaned else (
         cmd_fixtures_summarize(a) if a.summarize else (
-        cmd_fixtures_by_label(a) if a.label else cmd_fixtures_list(a))))))
+        cmd_fixtures_by_label(a) if a.label else (
+        cmd_fixtures_by_age(a) if a.age_days else cmd_fixtures_list(a)))))))
 
     p_stats = sub.add_parser("stats", help="Aggregate stats across all fixtures in a directory")
     p_stats.add_argument("directory", nargs="?", default="tests/fixtures",
@@ -1414,6 +1486,8 @@ def main():
                            metavar="OLD=NEW", help="Rename a tool (repeatable)")
     p_migrate.add_argument("--set-model", dest="set_model", metavar="MODEL",
                            help="Force all calls to use this model")
+    p_migrate.add_argument("--strip-pii", dest="strip_pii", action="append", metavar="PATTERN",
+                           help="Redact regex matches with [REDACTED] in tool inputs (repeatable)")
     p_migrate.set_defaults(func=cmd_migrate)
 
     p_record = sub.add_parser(

@@ -379,6 +379,55 @@ class AssertionProxy:
 
         return self
 
+    def assert_first_response_latency_under(self, ms: float) -> "AssertionProxy":
+        """Assert the first recorded call completed within *ms* milliseconds.
+
+        Useful for cold-start / time-to-first-token SLAs::
+
+            probe.assert_first_response_latency_under(1500)
+        """
+        if not self._calls or self._calls[0].duration_ms is None:
+            return self
+        first = self._calls[0].duration_ms
+        assert first <= ms, (
+            f"agentprobe: first call took {first:.1f}ms, exceeds cold-start limit {ms:.1f}ms"
+        )
+        return self
+
+    def assert_output_contains_all(self, *substrings: str) -> "AssertionProxy":
+        """Assert all *substrings* appear in the final output.
+
+        Shorthand for chaining multiple ``assert_output_contains`` calls::
+
+            probe.assert_output_contains_all("success", "3 results", "cached")
+        """
+        out = self.final_output or ""
+        missing = [s for s in substrings if s not in out]
+        assert not missing, (
+            f"agentprobe: final output missing: {missing}\n"
+            f"Output: {out[:200]!r}"
+        )
+        return self
+
+    def assert_tool_call_args_match(self, tool_name: str, pattern: str) -> "AssertionProxy":
+        """Assert at least one call to *tool_name* has serialized input matching *pattern* (regex).
+
+        Useful when you want a flexible structural check without full schema
+        validation::
+
+            probe.assert_tool_call_args_match("search", r'"language":\\s*"en"')
+        """
+        import re
+        inputs = self._tool_inputs(tool_name)
+        assert inputs, f"agentprobe: tool '{tool_name}' was never called"
+        for inp in inputs:
+            if re.search(pattern, json.dumps(inp)):
+                return self
+        raise AssertionError(
+            f"agentprobe: no call to '{tool_name}' matched pattern {pattern!r}. "
+            f"Inputs: {inputs}"
+        )
+
     def assert_tool_called_n_times(self, tool_name: str, n: int) -> "AssertionProxy":
         """Assert *tool_name* was called exactly *n* times across the entire session.
 
@@ -1864,6 +1913,39 @@ class AnthropicAssertionProxy:
                 f"(no text blocks and no tool_use blocks)"
             )
         return self
+
+    def assert_first_response_latency_under(self, ms: float) -> "AnthropicAssertionProxy":
+        """Assert the first recorded call completed within *ms* milliseconds."""
+        if not self._calls or self._calls[0].duration_ms is None:
+            return self
+        first = self._calls[0].duration_ms
+        assert first <= ms, (
+            f"agentprobe: first call took {first:.1f}ms, exceeds cold-start limit {ms:.1f}ms"
+        )
+        return self
+
+    def assert_output_contains_all(self, *substrings: str) -> "AnthropicAssertionProxy":
+        """Assert all *substrings* appear in the final output."""
+        out = self.final_output or ""
+        missing = [s for s in substrings if s not in out]
+        assert not missing, (
+            f"agentprobe: final output missing: {missing}\n"
+            f"Output: {out[:200]!r}"
+        )
+        return self
+
+    def assert_tool_call_args_match(self, tool_name: str, pattern: str) -> "AnthropicAssertionProxy":
+        """Assert at least one call to *tool_name* has serialized input matching *pattern* (regex)."""
+        import re
+        inputs = self._tool_inputs(tool_name)
+        assert inputs, f"agentprobe: tool '{tool_name}' was never called"
+        for inp in inputs:
+            if re.search(pattern, json.dumps(inp)):
+                return self
+        raise AssertionError(
+            f"agentprobe: no call to '{tool_name}' matched pattern {pattern!r}. "
+            f"Inputs: {inputs}"
+        )
 
     def assert_tool_called_n_times(self, tool_name: str, n: int) -> "AnthropicAssertionProxy":
         """Assert *tool_name* was called exactly *n* times across the entire session."""

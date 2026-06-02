@@ -4,6 +4,21 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.18.0] — 2026-06-02
+
+### Added
+
+**AssertionProxy + AnthropicAssertionProxy**
+- `probe.assert_first_response_latency_under(ms)` — cold-start SLA check on the first call only; skips if no `duration_ms` recorded
+- `probe.assert_output_contains_all(*substrings)` — asserts all given substrings appear in the final output; shorthand for multiple `assert_output_contains` chains
+- `probe.assert_tool_call_args_match(name, pattern)` — regex match on the full serialized tool input dict; flexible structural check without full schema validation
+
+**CLI**
+- `agentprobe fixtures --age-days N [dir]` — lists fixtures whose `_meta.recorded_at` is at least *N* days old; useful for stale-fixture cleanup
+- `agentprobe migrate --strip-pii PATTERN` — redacts all regex matches with `[REDACTED]` in tool call inputs (OpenAI and Anthropic); repeatable flag for multiple patterns
+
+---
+
 ## [0.17.0] — 2026-06-02
 
 ### Added

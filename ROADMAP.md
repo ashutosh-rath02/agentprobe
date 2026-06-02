@@ -1,6 +1,6 @@
 # agentprobe — Project Roadmap
 
-## Status: v0.17.0
+## Status: v0.18.0
 
 ---
 
@@ -74,23 +74,23 @@
 
 ---
 
-## Done (v0.17.0)
-- [x] `assert_tool_called_n_times`, `assert_no_sensitive_in_messages`, `assert_tool_input_contains`
-- [x] `agentprobe fixtures --label TAG`
+## Done (v0.18.0)
+- [x] `assert_first_response_latency_under`, `assert_output_contains_all`, `assert_tool_call_args_match`
+- [x] `fixtures --age-days N`, `migrate --strip-pii PATTERN`
 
 ---
 
-## Next — v0.18.0
+## Next — v0.19.0
 
 ### High priority
-- [ ] **`probe.assert_first_response_latency_under(ms)`** — assert only the FIRST call's latency; useful for checking cold-start performance
-- [ ] **`agentprobe fixtures --age-days N`** — list fixtures older than N days (by `_meta.recorded_at`)
-- [ ] **`probe.assert_output_contains_all(*substrings)`** — assert multiple substrings all appear in final output
+- [ ] **`probe.assert_response_format(format)`** — assert final output matches a named format (e.g. `"json"`, `"markdown"`)
+- [ ] **`agentprobe fixtures --delete-old N`** — delete fixtures older than N days (destructive, requires `--confirm`)
+- [ ] **`probe.assert_tool_never_called_with(name, **kv)`** — negative input assertion
 
 ### Medium priority
 - [ ] **`messages.stream()` recording support** — `MessageStreamManager` higher-level API
-- [ ] **`probe.assert_tool_call_args_match(name, pattern)`** — regex match on the full serialized tool input
-- [ ] **`agentprobe migrate --strip-pii PATTERN`** — redact matches from fixture tool inputs
+- [ ] **`probe.assert_prompt_growth_bounded(max_ratio)`** — assert each call's prompt tokens are < max_ratio × previous
+- [ ] **`agentprobe show --calls N`** — show only the first/last N calls
 
 ### Lower priority
 - [ ] **`agentprobe record --watch` real file watcher** — swap polling for `watchdog`
@@ -98,6 +98,6 @@
 
 ---
 
-## Publish checklist (v0.17.0)
-- [ ] `git tag v0.17.0 && git push --tags`
+## Publish checklist (v0.18.0)
+- [ ] `git tag v0.18.0 && git push --tags`
 - [ ] GitHub release with CHANGELOG excerpt
