@@ -1,6 +1,6 @@
 # agentprobe — Project Roadmap
 
-## Status: v0.10.0
+## Status: v0.11.0
 
 ---
 
@@ -65,33 +65,34 @@
 
 ---
 
-## Done (v0.10.0)
-- [x] `agentprobe replay <fixture> <script>` CLI command
-- [x] `agentprobe record --capture-stdout`
-- [x] `AnthropicMultiSession`
-- [x] `probe.assert_tool_called_before_output()` (OpenAI + Anthropic)
-- [x] `probe.call(n).tool_call_inputs` confirmed working
+## Done (v0.11.0)
+- [x] Anthropic streaming (`create(stream=True)`) — record/replay, `MockAnthropicStream`, event assembly/synthesis
+- [x] `agentprobe show` + `show --json` Anthropic support
+- [x] `agentprobe diff` + `diff --json` Anthropic support
+- [x] `probe.assert_response_time_under(ms)` (OpenAI + Anthropic)
+- [x] `probe.assert_tool_input_schema(name, schema)` (OpenAI + Anthropic)
 
 ---
 
-## Next — v0.11.0
+## Next — v0.12.0
 
 ### High priority
-- [ ] **Anthropic streaming support** — record/replay `messages.create(stream=True)` / `messages.stream()`; parity with OpenAI streaming
-- [ ] **`agentprobe show` Anthropic support** — pretty-print Anthropic fixtures; currently only renders OpenAI `choices` format
-- [ ] **`probe.assert_response_time_under(ms)`** — per-call wall-clock assertion; useful for latency SLAs in CI
+- [ ] **`agentprobe record` Anthropic provider** — `record --provider anthropic` to intercept `messages.create` instead of `chat.completions.create` from the CLI
+- [ ] **`probe.assert_output_language(lang)`** — detect response language (e.g. assert agent always replies in English); uses `langdetect`
+- [ ] **`probe.assert_no_hallucinated_tool_calls(allowed_tools)`** — fail if agent calls a tool not in `allowed_tools`
 
 ### Medium priority
-- [ ] **`agentprobe diff` Anthropic support** — diff two Anthropic fixtures by content / tool use blocks
-- [ ] **`probe.assert_tool_input_schema(name, schema)`** — validate tool call inputs against a JSON Schema
-- [ ] **`agentprobe record --capture-stdout` show in `show` command** — display captured stdout alongside calls
+- [ ] **Fixture tagging / metadata assertions** — `probe.assert_meta(key, value)` to assert custom fields from `_meta` header
+- [ ] **`agentprobe stats` per-model breakdown** — group token/cost stats by model within a fixture directory
+- [ ] **`probe.call(n).assert_response_time_under(ms)`** — per-call latency on the scoped proxy
 
 ### Lower priority
-- [ ] **`agentprobe record --watch` with real file watcher** — swap polling for `watchdog` event-based re-recording
+- [ ] **`messages.stream()` recording support** — higher-level streaming API via `MessageStreamManager`
+- [ ] **`agentprobe record --watch` with real file watcher** — swap polling for `watchdog`
 - [ ] **VS Code extension** — inline fixture viewer
 
 ---
 
-## Publish checklist (v0.10.0)
-- [ ] `git tag v0.10.0 && git push --tags`
+## Publish checklist (v0.11.0)
+- [ ] `git tag v0.11.0 && git push --tags`
 - [ ] GitHub release with CHANGELOG excerpt

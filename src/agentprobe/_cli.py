@@ -31,6 +31,11 @@ def _load_meta(path: str) -> dict:
     return {}
 
 
+def _is_anthropic_response(resp: dict) -> bool:
+    """Return True if *resp* is an Anthropic Message dict (not OpenAI choices format)."""
+    return "choices" not in resp and isinstance(resp.get("content"), list)
+
+
 def _fmt_choice(choice: dict) -> list[str]:
     lines = []
     msg = choice.get("message", {})
@@ -42,6 +47,20 @@ def _fmt_choice(choice: dict) -> list[str]:
         name = fn.get("name", "?")
         args = fn.get("arguments", "{}")
         lines.append(f"  [tool_call] {name}({args[:100]}{'...' if len(args) > 100 else ''})")
+    return lines
+
+
+def _fmt_anthropic_content(resp: dict) -> list[str]:
+    lines = []
+    for block in (resp.get("content") or []):
+        btype = block.get("type")
+        if btype == "text":
+            text = block.get("text", "")
+            lines.append(f"  [text] {text[:120]}{'...' if len(text) > 120 else ''}")
+        elif btype == "tool_use":
+            name = block.get("name", "?")
+            inp = json.dumps(block.get("input", {}))
+            lines.append(f"  [tool_use] {name}({inp[:100]}{'...' if len(inp) > 100 else ''})")
     return lines
 
 
@@ -58,78 +77,114 @@ def cmd_show(args):
     if meta:
         meta_str = f"  [v{meta.get('agentprobe_version', '?')} recorded {meta.get('recorded_at', '?')}]"
     print(f"fixture: {args.fixture}  ({len(calls)} call(s)){meta_str}\n")
+    total_in = 0
+    total_out = 0
     for i, call in enumerate(calls, 1):
         req = call.get("request", {})
         resp = call.get("response", {})
         usage = resp.get("usage") or {}
-        choices = resp.get("choices", [])
-        finish = choices[0]["finish_reason"] if choices else "?"
         ms = call.get("duration_ms")
         ms_str = f"  {ms:.0f}ms" if ms else ""
         streaming = " [stream]" if call.get("chunks") else ""
-        print(f"-- Call {i}/{len(calls)}  model={req.get('model', '?')}  "
-              f"stop={finish}"
-              f"  in={usage.get('prompt_tokens', '?')} out={usage.get('completion_tokens', '?')}"
-              f"{ms_str}{streaming}")
-        for choice in choices:
-            for line in _fmt_choice(choice):
+        model = resp.get("model") or req.get("model", "?")
+        if _is_anthropic_response(resp):
+            stop = resp.get("stop_reason", "?")
+            in_tok = usage.get("input_tokens", "?")
+            out_tok = usage.get("output_tokens", "?")
+            total_in += in_tok if isinstance(in_tok, int) else 0
+            total_out += out_tok if isinstance(out_tok, int) else 0
+            print(f"-- Call {i}/{len(calls)}  model={model}  stop={stop}"
+                  f"  in={in_tok} out={out_tok}{ms_str}{streaming}")
+            for line in _fmt_anthropic_content(resp):
                 print(line)
+        else:
+            choices = resp.get("choices", [])
+            finish = choices[0]["finish_reason"] if choices else "?"
+            in_tok = usage.get("prompt_tokens", "?")
+            out_tok = usage.get("completion_tokens", "?")
+            total_in += in_tok if isinstance(in_tok, int) else 0
+            total_out += out_tok if isinstance(out_tok, int) else 0
+            print(f"-- Call {i}/{len(calls)}  model={model}  stop={finish}"
+                  f"  in={in_tok} out={out_tok}{ms_str}{streaming}")
+            for choice in choices:
+                for line in _fmt_choice(choice):
+                    print(line)
         print()
 
-    total_in = sum((c.get("response", {}).get("usage") or {}).get("prompt_tokens", 0) for c in calls)
-    total_out = sum((c.get("response", {}).get("usage") or {}).get("completion_tokens", 0) for c in calls)
     print(f"total tokens: {total_in + total_out}  ({total_in} in + {total_out} out)")
 
 
 def cmd_show_json(args):
-    from agentprobe._pricing import estimate_cost
+    from agentprobe._pricing import estimate_cost, estimate_cost_anthropic
     calls = _filter_calls(_load(args.fixture), getattr(args, "model", None))
     out = []
-    total_prompt = 0
-    total_completion = 0
+    total_in = 0
+    total_out = 0
     total_duration = 0.0
     total_cost = 0.0
     for call in calls:
         resp = call.get("response", {})
         usage = resp.get("usage") or {}
-        choices = resp.get("choices", [])
         chunks = call.get("chunks")
-        prompt_tok = usage.get("prompt_tokens") or 0
-        completion_tok = usage.get("completion_tokens") or 0
         dur = call.get("duration_ms") or 0.0
-        model = call.get("request", {}).get("model") or ""
-        cost = estimate_cost(model, prompt_tok, completion_tok)
-        total_prompt += prompt_tok
-        total_completion += completion_tok
+        model = resp.get("model") or call.get("request", {}).get("model") or ""
+        if _is_anthropic_response(resp):
+            in_tok = usage.get("input_tokens") or 0
+            out_tok = usage.get("output_tokens") or 0
+            cost = estimate_cost_anthropic(model, in_tok, out_tok)
+            content = resp.get("content") or []
+            tools = [b["name"] for b in content if b.get("type") == "tool_use"]
+            final_text = next((b["text"] for b in reversed(content) if b.get("type") == "text" and b.get("text")), None)
+            entry = {
+                "provider": "anthropic",
+                "model": model or None,
+                "stop_reason": resp.get("stop_reason"),
+                "input_tokens": in_tok or None,
+                "output_tokens": out_tok or None,
+                "duration_ms": dur or None,
+                "streaming": bool(chunks),
+                "chunk_count": len(chunks) if chunks else None,
+                "estimated_cost_usd": cost if cost else None,
+                "tools_called": tools,
+                "final_text": final_text,
+            }
+        else:
+            choices = resp.get("choices", [])
+            in_tok = usage.get("prompt_tokens") or 0
+            out_tok = usage.get("completion_tokens") or 0
+            cost = estimate_cost(model, in_tok, out_tok)
+            entry = {
+                "provider": "openai",
+                "model": model or None,
+                "finish_reason": choices[0]["finish_reason"] if choices else None,
+                "prompt_tokens": in_tok or None,
+                "completion_tokens": out_tok or None,
+                "duration_ms": dur or None,
+                "streaming": bool(chunks),
+                "chunk_count": len(chunks) if chunks else None,
+                "estimated_cost_usd": cost if cost else None,
+                "tools_called": [
+                    tc["function"]["name"]
+                    for ch in choices
+                    for tc in (ch["message"].get("tool_calls") or [])
+                ],
+                "final_text": next(
+                    (ch["message"].get("content") for ch in reversed(choices) if ch["message"].get("content")),
+                    None,
+                ),
+            }
+        total_in += in_tok
+        total_out += out_tok
         total_duration += dur
         total_cost += cost
-        entry = {
-            "model": model or None,
-            "finish_reason": choices[0]["finish_reason"] if choices else None,
-            "prompt_tokens": prompt_tok or None,
-            "completion_tokens": completion_tok or None,
-            "duration_ms": call.get("duration_ms"),
-            "streaming": bool(chunks),
-            "chunk_count": len(chunks) if chunks else None,
-            "estimated_cost_usd": cost if cost else None,
-            "tools_called": [
-                tc["function"]["name"]
-                for ch in choices
-                for tc in (ch["message"].get("tool_calls") or [])
-            ],
-            "final_text": next(
-                (ch["message"].get("content") for ch in reversed(choices) if ch["message"].get("content")),
-                None,
-            ),
-        }
         out.append(entry)
     result = {
         "calls": out,
         "summary": {
             "total_calls": len(out),
-            "total_prompt_tokens": total_prompt,
-            "total_completion_tokens": total_completion,
-            "total_tokens": total_prompt + total_completion,
+            "total_input_tokens": total_in,
+            "total_output_tokens": total_out,
+            "total_tokens": total_in + total_out,
             "total_duration_ms": total_duration,
             "estimated_total_cost_usd": round(total_cost, 8),
             "streaming_calls": sum(1 for e in out if e["streaming"]),
@@ -167,24 +222,35 @@ def cmd_diff(args):
         a_resp = a.get("response", {})
         b_resp = b.get("response", {})
 
-        a_choices = a_resp.get("choices", [])
-        b_choices = b_resp.get("choices", [])
-        a_stop = a_choices[0]["finish_reason"] if a_choices else None
-        b_stop = b_choices[0]["finish_reason"] if b_choices else None
+        def _stop(resp):
+            if _is_anthropic_response(resp):
+                return resp.get("stop_reason")
+            ch = resp.get("choices", [])
+            return ch[0]["finish_reason"] if ch else None
+
+        def _tools(resp):
+            if _is_anthropic_response(resp):
+                return [b["name"] for b in (resp.get("content") or []) if b.get("type") == "tool_use"]
+            ch = resp.get("choices", [])
+            return [tc["function"]["name"] for c in ch for tc in (c["message"].get("tool_calls") or [])]
+
+        def _in_tok(resp):
+            u = resp.get("usage") or {}
+            return u.get("input_tokens") or u.get("prompt_tokens", 0)
+
+        a_stop, b_stop = _stop(a_resp), _stop(b_resp)
         if a_stop != b_stop:
-            print(f"  call {i+1}: finish_reason {a_stop!r} -> {b_stop!r}")
+            print(f"  call {i+1}: stop_reason {a_stop!r} -> {b_stop!r}")
             diffs += 1
 
-        a_tools = [tc["function"]["name"] for ch in a_choices for tc in (ch["message"].get("tool_calls") or [])]
-        b_tools = [tc["function"]["name"] for ch in b_choices for tc in (ch["message"].get("tool_calls") or [])]
+        a_tools, b_tools = _tools(a_resp), _tools(b_resp)
         if a_tools != b_tools:
             print(f"  call {i+1}: tools {a_tools} -> {b_tools}")
             diffs += 1
 
-        a_in = (a_resp.get("usage") or {}).get("prompt_tokens", 0)
-        b_in = (b_resp.get("usage") or {}).get("prompt_tokens", 0)
+        a_in, b_in = _in_tok(a_resp), _in_tok(b_resp)
         if a_in != b_in:
-            print(f"  call {i+1}: prompt_tokens {a_in} -> {b_in}")
+            print(f"  call {i+1}: input_tokens {a_in} -> {b_in}")
             diffs += 1
 
     if diffs == 0:
@@ -214,36 +280,56 @@ def cmd_diff_json(args):
             differences.append({"call": i + 1, "type": "missing", "present_in": "b" if a is None else "a"})
             continue
 
-        a_choices = a.get("response", {}).get("choices", [])
-        b_choices = b.get("response", {}).get("choices", [])
+        ar, br = a.get("response", {}), b.get("response", {})
 
-        a_stop = a_choices[0]["finish_reason"] if a_choices else None
-        b_stop = b_choices[0]["finish_reason"] if b_choices else None
+        def _stop_j(resp):
+            if _is_anthropic_response(resp):
+                return resp.get("stop_reason")
+            ch = resp.get("choices", [])
+            return ch[0]["finish_reason"] if ch else None
+
+        def _tools_j(resp):
+            if _is_anthropic_response(resp):
+                return [b["name"] for b in (resp.get("content") or []) if b.get("type") == "tool_use"]
+            ch = resp.get("choices", [])
+            return [tc["function"]["name"] for c in ch for tc in (c["message"].get("tool_calls") or [])]
+
+        def _tool_args_j(resp):
+            if _is_anthropic_response(resp):
+                return {b["name"]: json.dumps(b.get("input", {})) for b in (resp.get("content") or []) if b.get("type") == "tool_use"}
+            ch = resp.get("choices", [])
+            return {tc["function"]["name"]: tc["function"].get("arguments") for c in ch for tc in (c["message"].get("tool_calls") or [])}
+
+        def _text_j(resp):
+            if _is_anthropic_response(resp):
+                return next((b["text"] for b in reversed(resp.get("content") or []) if b.get("type") == "text" and b.get("text")), None)
+            ch = resp.get("choices", [])
+            return next((c["message"].get("content") for c in reversed(ch) if c["message"].get("content")), None)
+
+        def _in_tok_j(resp):
+            u = resp.get("usage") or {}
+            return u.get("input_tokens") or u.get("prompt_tokens", 0)
+
+        a_stop, b_stop = _stop_j(ar), _stop_j(br)
         if a_stop != b_stop:
-            differences.append({"call": i + 1, "type": "finish_reason", "a": a_stop, "b": b_stop})
+            differences.append({"call": i + 1, "type": "stop_reason", "a": a_stop, "b": b_stop})
 
-        a_tools = [tc["function"]["name"] for ch in a_choices for tc in (ch["message"].get("tool_calls") or [])]
-        b_tools = [tc["function"]["name"] for ch in b_choices for tc in (ch["message"].get("tool_calls") or [])]
+        a_tools, b_tools = _tools_j(ar), _tools_j(br)
         if a_tools != b_tools:
             differences.append({"call": i + 1, "type": "tools", "a": a_tools, "b": b_tools})
 
-        # Compare tool arguments per tool call
-        a_args = {tc["function"]["name"]: tc["function"].get("arguments") for ch in a_choices for tc in (ch["message"].get("tool_calls") or [])}
-        b_args = {tc["function"]["name"]: tc["function"].get("arguments") for ch in b_choices for tc in (ch["message"].get("tool_calls") or [])}
+        a_args, b_args = _tool_args_j(ar), _tool_args_j(br)
         for name in set(a_args) & set(b_args):
             if a_args[name] != b_args[name]:
                 differences.append({"call": i + 1, "type": "tool_arguments", "tool": name, "a": a_args[name], "b": b_args[name]})
 
-        # Compare text content
-        a_content = next((ch["message"].get("content") for ch in reversed(a_choices) if ch["message"].get("content")), None)
-        b_content = next((ch["message"].get("content") for ch in reversed(b_choices) if ch["message"].get("content")), None)
+        a_content, b_content = _text_j(ar), _text_j(br)
         if a_content != b_content:
             differences.append({"call": i + 1, "type": "content", "a": a_content, "b": b_content})
 
-        a_in = (a.get("response", {}).get("usage") or {}).get("prompt_tokens", 0)
-        b_in = (b.get("response", {}).get("usage") or {}).get("prompt_tokens", 0)
+        a_in, b_in = _in_tok_j(ar), _in_tok_j(br)
         if a_in != b_in:
-            differences.append({"call": i + 1, "type": "prompt_tokens", "a": a_in, "b": b_in})
+            differences.append({"call": i + 1, "type": "input_tokens", "a": a_in, "b": b_in})
 
     result = {
         "fixture_a": args.fixture_a,

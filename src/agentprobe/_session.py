@@ -379,6 +379,52 @@ class AssertionProxy:
 
         return self
 
+    def assert_response_time_under(self, ms: float) -> "AssertionProxy":
+        """Assert every call completed within *ms* milliseconds.
+
+        Useful as a latency SLA gate in CI — only meaningful on real recorded
+        fixtures where ``duration_ms`` reflects actual network time::
+
+            probe.assert_response_time_under(5000)  # each call under 5 s
+        """
+        for i, call in enumerate(self._calls):
+            if call.duration_ms is not None:
+                assert call.duration_ms <= ms, (
+                    f"agentprobe: call {i + 1} took {call.duration_ms:.1f}ms, "
+                    f"exceeds limit {ms:.1f}ms"
+                )
+        return self
+
+    def assert_tool_input_schema(self, tool_name: str, schema: Dict[str, Any]) -> "AssertionProxy":
+        """Assert every call to *tool_name* has inputs that validate against *schema*.
+
+        Requires the ``jsonschema`` library (``pip install jsonschema``)::
+
+            probe.assert_tool_input_schema("search", {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            })
+        """
+        try:
+            import jsonschema
+        except ImportError:
+            raise ImportError(
+                "agentprobe: jsonschema is required for assert_tool_input_schema. "
+                "Install it with: pip install jsonschema"
+            )
+        inputs = self._tool_inputs(tool_name)
+        assert inputs, f"agentprobe: tool '{tool_name}' was never called"
+        for i, inp in enumerate(inputs):
+            try:
+                jsonschema.validate(inp, schema)
+            except jsonschema.ValidationError as e:
+                raise AssertionError(
+                    f"agentprobe: tool '{tool_name}' call {i + 1} input failed "
+                    f"schema validation: {e.message}"
+                ) from None
+        return self
+
     def assert_tool_called_before_output(self) -> "AssertionProxy":
         """Assert at least one tool was called AND the final response contains text output.
 
@@ -1474,6 +1520,37 @@ class AnthropicAssertionProxy:
                 f"agentprobe: call {i + 1} returned an empty response "
                 f"(no text blocks and no tool_use blocks)"
             )
+        return self
+
+    def assert_response_time_under(self, ms: float) -> "AnthropicAssertionProxy":
+        """Assert every call completed within *ms* milliseconds."""
+        for i, call in enumerate(self._calls):
+            if call.duration_ms is not None:
+                assert call.duration_ms <= ms, (
+                    f"agentprobe: call {i + 1} took {call.duration_ms:.1f}ms, "
+                    f"exceeds limit {ms:.1f}ms"
+                )
+        return self
+
+    def assert_tool_input_schema(self, tool_name: str, schema: Dict[str, Any]) -> "AnthropicAssertionProxy":
+        """Assert every call to *tool_name* has inputs that validate against *schema*."""
+        try:
+            import jsonschema
+        except ImportError:
+            raise ImportError(
+                "agentprobe: jsonschema is required for assert_tool_input_schema. "
+                "Install it with: pip install jsonschema"
+            )
+        inputs = self._tool_inputs(tool_name)
+        assert inputs, f"agentprobe: tool '{tool_name}' was never called"
+        for i, inp in enumerate(inputs):
+            try:
+                jsonschema.validate(inp, schema)
+            except jsonschema.ValidationError as e:
+                raise AssertionError(
+                    f"agentprobe: tool '{tool_name}' call {i + 1} input failed "
+                    f"schema validation: {e.message}"
+                ) from None
         return self
 
     def assert_tool_called_before_output(self) -> "AnthropicAssertionProxy":

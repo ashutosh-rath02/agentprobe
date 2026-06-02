@@ -4,6 +4,28 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.11.0] — 2026-06-02
+
+### Added
+
+**Anthropic streaming**
+- `messages.create(stream=True)` — full record/replay support; recording consumes events upfront (same behaviour as OpenAI streaming); replay deserializes stored `chunks` back into `RawMessageStreamEvent` objects
+- `MockAnthropicStream` — sync mock with `__iter__`, `__enter__`/`__exit__`, `get_final_message()`, `get_final_text()`; `MockAnthropicAsyncStream` for async
+- `_assemble_anthropic_from_events(events)` — reassembles a `Message` dict from serialized stream events
+- `_make_anthropic_stream_events(response)` — synthesizes plausible stream events from any non-streaming fixture, enabling `stream=True` replay on fixtures recorded without streaming
+
+**AssertionProxy + AnthropicAssertionProxy**
+- `probe.assert_response_time_under(ms)` — latency SLA gate; asserts every call's recorded `duration_ms` is under the limit
+- `probe.assert_tool_input_schema(name, schema)` — validates tool call inputs against a JSON Schema (requires `jsonschema`)
+
+**CLI: Anthropic fixture support**
+- `agentprobe show` — auto-detects Anthropic format; renders `stop_reason`, `input_tokens`/`output_tokens`, text and `tool_use` blocks
+- `agentprobe show --json` — includes `provider: "anthropic"` field; uses `input_tokens`/`output_tokens` and Anthropic pricing
+- `agentprobe diff` — diffs Anthropic fixtures on `stop_reason`, tools, `input_tokens`, content
+- `agentprobe diff --json` — machine-readable Anthropic-aware diff
+
+---
+
 ## [0.10.0] — 2026-06-02
 
 ### Added
