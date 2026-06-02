@@ -1,10 +1,15 @@
 import json
 import os
+import time
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+from unittest.mock import patch
 
 from ._interceptor import (
+    _assemble_from_chunks,
+    MockAsyncStream,
+    MockStream,
     async_recording_context,
     async_replaying_context,
     recording_context,
@@ -12,6 +17,7 @@ from ._interceptor import (
 )
 from ._models import RecordedCall
 from ._pricing import estimate_cost
+from ._serializer import deserialize_chunk, deserialize_response, serialize_request
 
 
 def _should_update() -> bool:
@@ -334,4 +340,183 @@ class Session:
                 yield proxy
         else:
             async with self.async_record(path) as proxy:
+                yield proxy
+
+
+# ── Per-client helpers (shared by MultiSession) ───────────────────────────────
+
+def _make_sync_recorder(calls: List[RecordedCall], original):
+    def patched(**kwargs):
+        start = time.time()
+        if kwargs.get("stream"):
+            raw = list(original(**kwargs))
+            ser = [c.model_dump() for c in raw]
+            calls.append(RecordedCall(
+                request=serialize_request(kwargs),
+                response=_assemble_from_chunks(ser),
+                chunks=ser,
+                duration_ms=(time.time() - start) * 1000,
+            ))
+            return MockStream(raw)
+        resp = original(**kwargs)
+        calls.append(RecordedCall(
+            request=serialize_request(kwargs),
+            response=resp.model_dump(),
+            duration_ms=(time.time() - start) * 1000,
+        ))
+        return resp
+    return patched
+
+
+def _make_sync_replayer(calls: List[RecordedCall], index: List[int]):
+    def patched(**kwargs):
+        if index[0] >= len(calls):
+            raise RuntimeError(
+                f"agentprobe: replay exhausted — fixture has {len(calls)} call(s) "
+                f"but the agent made more. Re-record or update the fixture."
+            )
+        call = calls[index[0]]
+        index[0] += 1
+        if kwargs.get("stream"):
+            if call.chunks is None:
+                raise RuntimeError(
+                    "agentprobe: agent used stream=True but this fixture was recorded "
+                    "without streaming. Re-record with stream=True."
+                )
+            return MockStream([deserialize_chunk(c) for c in call.chunks])
+        return deserialize_response(call.response)
+    return patched
+
+
+def _make_async_recorder(calls: List[RecordedCall], original):
+    async def patched(**kwargs):
+        start = time.time()
+        if kwargs.get("stream"):
+            raw = [c async for c in await original(**kwargs)]
+            ser = [c.model_dump() for c in raw]
+            calls.append(RecordedCall(
+                request=serialize_request(kwargs),
+                response=_assemble_from_chunks(ser),
+                chunks=ser,
+                duration_ms=(time.time() - start) * 1000,
+            ))
+            return MockAsyncStream(raw)
+        resp = await original(**kwargs)
+        calls.append(RecordedCall(
+            request=serialize_request(kwargs),
+            response=resp.model_dump(),
+            duration_ms=(time.time() - start) * 1000,
+        ))
+        return resp
+    return patched
+
+
+def _make_async_replayer(calls: List[RecordedCall], index: List[int]):
+    async def patched(**kwargs):
+        if index[0] >= len(calls):
+            raise RuntimeError(
+                f"agentprobe: replay exhausted — fixture has {len(calls)} call(s) "
+                f"but the agent made more. Re-record or update the fixture."
+            )
+        call = calls[index[0]]
+        index[0] += 1
+        if kwargs.get("stream"):
+            if call.chunks is None:
+                raise RuntimeError(
+                    "agentprobe: agent used stream=True but this fixture was recorded "
+                    "without streaming. Re-record with stream=True."
+                )
+            return MockAsyncStream([deserialize_chunk(c) for c in call.chunks])
+        return deserialize_response(call.response)
+    return patched
+
+
+class MultiSession:
+    """Per-client record/replay for multi-agent (subagent) scenarios.
+
+    Unlike Session which patches openai at the class level (all clients share
+    the same intercept), MultiSession patches each client instance independently.
+    This means two agents using different clients can be replayed simultaneously
+    without their call sequences interfering with each other.
+
+    Usage::
+
+        multi = MultiSession()
+        client_main = openai.OpenAI(api_key="...")
+        client_sub  = openai.OpenAI(api_key="...")
+
+        with multi.replay(client_main, "fixtures/main.jsonl") as probe_main:
+            with multi.replay(client_sub, "fixtures/sub.jsonl") as probe_sub:
+                run_orchestrator(client_main, client_sub)
+
+        probe_main.assert_tool_called("bash")
+        probe_sub.assert_max_iterations(3)
+    """
+
+    # ── Sync ─────────────────────────────────────────────────────────────
+
+    @contextmanager
+    def record(self, client, path: Union[str, Path]):
+        """Intercept *client*'s calls and save them to *path* (JSONL)."""
+        path = Path(path)
+        calls: List[RecordedCall] = []
+        original = client.chat.completions.create
+        with patch.object(client.chat.completions, "create",
+                          _make_sync_recorder(calls, original)):
+            yield AssertionProxy(calls)
+        _save_calls(calls, path)
+
+    @contextmanager
+    def replay(self, client, path: Union[str, Path]):
+        """Replay *client*'s calls from a previously recorded fixture."""
+        path = Path(path)
+        _check_exists(path)
+        calls = _load_calls(path)
+        with patch.object(client.chat.completions, "create",
+                          _make_sync_replayer(calls, [0])):
+            yield AssertionProxy(calls)
+
+    @contextmanager
+    def auto(self, client, path: Union[str, Path]):
+        """Record if fixture missing or AGENTPROBE_UPDATE=1; replay otherwise."""
+        path = Path(path)
+        if path.exists() and not _should_update():
+            with self.replay(client, path) as proxy:
+                yield proxy
+        else:
+            with self.record(client, path) as proxy:
+                yield proxy
+
+    # ── Async ─────────────────────────────────────────────────────────────
+
+    @asynccontextmanager
+    async def async_record(self, client, path: Union[str, Path]):
+        """Async version of record() — for agents using AsyncOpenAI."""
+        path = Path(path)
+        calls: List[RecordedCall] = []
+        original = client.chat.completions.create
+        with patch.object(client.chat.completions, "create",
+                          _make_async_recorder(calls, original)):
+            yield AssertionProxy(calls)
+        _save_calls(calls, path)
+
+    @asynccontextmanager
+    async def async_replay(self, client, path: Union[str, Path]):
+        """Async version of replay() — for agents using AsyncOpenAI."""
+        path = Path(path)
+        _check_exists(path)
+        calls = _load_calls(path)
+        with patch.object(client.chat.completions, "create",
+                          _make_async_replayer(calls, [0])):
+            yield AssertionProxy(calls)
+
+    @asynccontextmanager
+    async def async_auto(self, client, path: Union[str, Path]):
+        """Async version of auto() — record-on-first-run, replay thereafter."""
+        path = Path(path)
+        if path.exists() and not _should_update():
+            async with self.async_replay(client, path) as proxy:
+                yield proxy
+        else:
+            async with self.async_record(client, path) as proxy:
                 yield proxy

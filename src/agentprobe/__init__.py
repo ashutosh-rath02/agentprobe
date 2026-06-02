@@ -1,4 +1,4 @@
-from ._session import AssertionProxy, Session
+from ._session import AssertionProxy, MultiSession, Session
 
-__all__ = ["Session", "AssertionProxy"]
-__version__ = "0.1.0"
+__all__ = ["Session", "MultiSession", "AssertionProxy"]
+__version__ = "0.2.0"
