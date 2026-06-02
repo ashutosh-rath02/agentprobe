@@ -379,6 +379,68 @@ class AssertionProxy:
 
         return self
 
+    def assert_tool_called_n_times(self, tool_name: str, n: int) -> "AssertionProxy":
+        """Assert *tool_name* was called exactly *n* times across the entire session.
+
+        Complements ``assert_tool_call_count_per_call`` which checks per-call counts::
+
+            probe.assert_tool_called_n_times("search", 3)
+        """
+        total = sum(
+            tc["function"]["name"] == tool_name
+            for call in self._calls
+            for choice in call.response.get("choices", [])
+            for tc in (choice.get("message", {}).get("tool_calls") or [])
+        )
+        assert total == n, (
+            f"agentprobe: tool '{tool_name}' was called {total} time(s) total, expected {n}"
+        )
+        return self
+
+    def assert_no_sensitive_in_messages(self, *patterns: str) -> "AssertionProxy":
+        """Assert no outgoing request message content matches any of *patterns* (regex).
+
+        Guards against agents forwarding PII or secrets in the conversation
+        messages sent to the API (not just tool inputs)::
+
+            probe.assert_no_sensitive_in_messages(r"sk-[A-Za-z0-9]{32,}")  # API key leak
+        """
+        import re
+        for i, call in enumerate(self._calls):
+            for msg in (call.request.get("messages") or []):
+                content = msg.get("content") or ""
+                if isinstance(content, list):
+                    content = " ".join(
+                        p.get("text", "") if isinstance(p, dict) else str(p)
+                        for p in content
+                    )
+                for pat in patterns:
+                    m = re.search(pat, str(content))
+                    if m:
+                        raise AssertionError(
+                            f"agentprobe: call {i + 1} message matched sensitive pattern "
+                            f"{pat!r}: {m.group()!r}"
+                        )
+        return self
+
+    def assert_tool_input_contains(self, tool_name: str, key: str,
+                                   value: Any) -> "AssertionProxy":
+        """Assert at least one call to *tool_name* had *key* = *value* in its input.
+
+        Shorthand for ``assert_tool_called_with`` when you only care about one key::
+
+            probe.assert_tool_input_contains("search", "language", "en")
+        """
+        inputs = self._tool_inputs(tool_name)
+        assert inputs, f"agentprobe: tool '{tool_name}' was never called"
+        for inp in inputs:
+            if inp.get(key) == value:
+                return self
+        raise AssertionError(
+            f"agentprobe: tool '{tool_name}' was never called with {key}={value!r}. "
+            f"Actual inputs: {inputs}"
+        )
+
     def assert_final_tool_not_called(self, tool_name: str) -> "AssertionProxy":
         """Assert the last API call did not invoke *tool_name*.
 
@@ -1802,6 +1864,51 @@ class AnthropicAssertionProxy:
                 f"(no text blocks and no tool_use blocks)"
             )
         return self
+
+    def assert_tool_called_n_times(self, tool_name: str, n: int) -> "AnthropicAssertionProxy":
+        """Assert *tool_name* was called exactly *n* times across the entire session."""
+        total = sum(
+            1 for call in self._calls
+            for block in (call.response.get("content") or [])
+            if block.get("type") == "tool_use" and block["name"] == tool_name
+        )
+        assert total == n, (
+            f"agentprobe: tool '{tool_name}' was called {total} time(s) total, expected {n}"
+        )
+        return self
+
+    def assert_no_sensitive_in_messages(self, *patterns: str) -> "AnthropicAssertionProxy":
+        """Assert no outgoing request message content matches any of *patterns* (regex)."""
+        import re
+        for i, call in enumerate(self._calls):
+            for msg in (call.request.get("messages") or []):
+                content = msg.get("content") or ""
+                if isinstance(content, list):
+                    content = " ".join(
+                        p.get("text", "") if isinstance(p, dict) else str(p)
+                        for p in content
+                    )
+                for pat in patterns:
+                    m = re.search(pat, str(content))
+                    if m:
+                        raise AssertionError(
+                            f"agentprobe: call {i + 1} message matched sensitive pattern "
+                            f"{pat!r}: {m.group()!r}"
+                        )
+        return self
+
+    def assert_tool_input_contains(self, tool_name: str, key: str,
+                                   value: Any) -> "AnthropicAssertionProxy":
+        """Assert at least one call to *tool_name* had *key* = *value* in its input."""
+        inputs = self._tool_inputs(tool_name)
+        assert inputs, f"agentprobe: tool '{tool_name}' was never called"
+        for inp in inputs:
+            if inp.get(key) == value:
+                return self
+        raise AssertionError(
+            f"agentprobe: tool '{tool_name}' was never called with {key}={value!r}. "
+            f"Actual inputs: {inputs}"
+        )
 
     def assert_final_tool_not_called(self, tool_name: str) -> "AnthropicAssertionProxy":
         """Assert the last API call did not invoke *tool_name*."""

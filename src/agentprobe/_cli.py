@@ -908,6 +908,34 @@ def cmd_compare_score(args):
             print("  Significant differences — fixtures may represent different agent behaviors.")
 
 
+def cmd_fixtures_by_label(args):
+    """List fixtures that have a specific label in their _meta header."""
+    directory = Path(args.directory)
+    if not directory.is_dir():
+        print(f"agentprobe: not a directory: {args.directory}", file=sys.stderr)
+        sys.exit(1)
+
+    label_filter = args.label
+    fixtures = sorted(directory.rglob("*.jsonl")) + sorted(directory.rglob("*.jsonl.gz"))
+    matches = []
+    for f in fixtures:
+        meta = _load_meta(str(f))
+        if meta.get("label") == label_filter:
+            matches.append(str(f))
+
+    if not matches:
+        print(f"agentprobe: no fixtures with label '{label_filter}' found in {args.directory}")
+        return
+
+    if getattr(args, "json", False):
+        print(json.dumps({"label": label_filter, "fixtures": matches}))
+    else:
+        print(f"Fixtures with label='{label_filter}' in {args.directory}:\n")
+        for path in matches:
+            print(f"  {path}")
+        print(f"\n{len(matches)} fixture(s)")
+
+
 def cmd_fixtures_orphaned(args):
     """List fixture files not referenced in any Python test file."""
     directory = Path(args.directory)
@@ -1357,10 +1385,13 @@ def main():
                         help="List fixture files not referenced in any test file")
     p_list.add_argument("--summarize", action="store_true",
                         help="Print a one-line summary (calls, tokens, tools) per fixture")
+    p_list.add_argument("--label", metavar="TAG",
+                        help="List fixtures that have this label in their _meta header")
     p_list.set_defaults(func=lambda a: cmd_fixtures_clean(a) if a.clean else (
         cmd_stats_by_date(a) if a.by_date else (
         cmd_fixtures_orphaned(a) if a.orphaned else (
-        cmd_fixtures_summarize(a) if a.summarize else cmd_fixtures_list(a)))))
+        cmd_fixtures_summarize(a) if a.summarize else (
+        cmd_fixtures_by_label(a) if a.label else cmd_fixtures_list(a))))))
 
     p_stats = sub.add_parser("stats", help="Aggregate stats across all fixtures in a directory")
     p_stats.add_argument("directory", nargs="?", default="tests/fixtures",

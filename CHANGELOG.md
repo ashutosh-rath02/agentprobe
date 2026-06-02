@@ -4,6 +4,20 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.17.0] — 2026-06-02
+
+### Added
+
+**AssertionProxy + AnthropicAssertionProxy**
+- `probe.assert_tool_called_n_times(name, n)` — asserts the total invocation count of *name* across the full session; complements `assert_tool_call_count_per_call` which checks per-turn counts
+- `probe.assert_no_sensitive_in_messages(*patterns)` — regex-guards all outgoing request messages against sensitive data (API keys, SSNs, emails); checks both user and assistant message content
+- `probe.assert_tool_input_contains(name, key, value)` — asserts at least one call to *name* had `input[key] == value`; shorthand for single-field input checks without full schema
+
+**CLI**
+- `agentprobe fixtures --label TAG [dir]` — lists all fixtures whose `_meta.label` equals *TAG*; `--json` for machine-readable output; complements `record --label`
+
+---
+
 ## [0.16.0] — 2026-06-02
 
 ### Added

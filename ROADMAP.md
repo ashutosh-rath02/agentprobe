@@ -1,6 +1,6 @@
 # agentprobe — Project Roadmap
 
-## Status: v0.16.0
+## Status: v0.17.0
 
 ---
 
@@ -74,23 +74,23 @@
 
 ---
 
-## Done (v0.16.0)
-- [x] `assert_final_tool_not_called`, `assert_output_word_count`, `assert_no_pii_in_tool_inputs`
-- [x] `record --label TAG`, `show --stdout`
+## Done (v0.17.0)
+- [x] `assert_tool_called_n_times`, `assert_no_sensitive_in_messages`, `assert_tool_input_contains`
+- [x] `agentprobe fixtures --label TAG`
 
 ---
 
-## Next — v0.17.0
+## Next — v0.18.0
 
 ### High priority
-- [ ] **`probe.assert_tool_called_n_times(name, n)`** — total count across entire session (complement to per-call variant)
-- [ ] **`agentprobe record --format ndjson`** — alias for `--output-format jsonl` but also support JSON array output
-- [ ] **`probe.assert_no_sensitive_in_messages(patterns)`** — PII guard on outgoing request messages (not just tool inputs)
+- [ ] **`probe.assert_first_response_latency_under(ms)`** — assert only the FIRST call's latency; useful for checking cold-start performance
+- [ ] **`agentprobe fixtures --age-days N`** — list fixtures older than N days (by `_meta.recorded_at`)
+- [ ] **`probe.assert_output_contains_all(*substrings)`** — assert multiple substrings all appear in final output
 
 ### Medium priority
 - [ ] **`messages.stream()` recording support** — `MessageStreamManager` higher-level API
-- [ ] **`agentprobe fixtures --label FILTER`** — list fixtures with a specific `_meta.label`
-- [ ] **`probe.assert_tool_input_contains(name, key, value)`** — shorthand for checking a specific key in tool input without full schema
+- [ ] **`probe.assert_tool_call_args_match(name, pattern)`** — regex match on the full serialized tool input
+- [ ] **`agentprobe migrate --strip-pii PATTERN`** — redact matches from fixture tool inputs
 
 ### Lower priority
 - [ ] **`agentprobe record --watch` real file watcher** — swap polling for `watchdog`
@@ -98,6 +98,6 @@
 
 ---
 
-## Publish checklist (v0.16.0)
-- [ ] `git tag v0.16.0 && git push --tags`
+## Publish checklist (v0.17.0)
+- [ ] `git tag v0.17.0 && git push --tags`
 - [ ] GitHub release with CHANGELOG excerpt
