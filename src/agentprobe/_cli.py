@@ -988,6 +988,7 @@ def cmd_record(args):
     is_async = "asyncio.run(" in script_source or "async def main" in script_source
 
     timeout_s = getattr(args, "timeout", None)
+    max_calls = getattr(args, "max_calls", None)
 
     capture_stdout = getattr(args, "capture_stdout", False)
     import io, contextlib
@@ -1099,6 +1100,11 @@ def cmd_record(args):
 
     dry_run = getattr(args, "dry_run", False)
     append = getattr(args, "append", False)
+
+    if max_calls is not None and len(calls) > max_calls:
+        print(f"agentprobe: truncating to {max_calls} call(s) (recorded {len(calls)})")
+        calls = calls[:max_calls]
+
     async_note = " (async script)" if is_async else ""
     gz_note = " [gzip]" if output.suffix == ".gz" else ""
 
@@ -1242,6 +1248,8 @@ def main():
                           help="Capture script stdout/stderr and store in fixture _meta header")
     p_record.add_argument("--provider", choices=["openai", "anthropic"], default="openai",
                           help="API provider to intercept (default: openai)")
+    p_record.add_argument("--max-calls", dest="max_calls", type=int, metavar="N",
+                          help="Stop after recording N calls (truncates fixture)")
     p_record.set_defaults(func=lambda a: cmd_record_watch(a) if a.watch else cmd_record(a))
 
     p_replay = sub.add_parser(

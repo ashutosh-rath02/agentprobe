@@ -379,6 +379,62 @@ class AssertionProxy:
 
         return self
 
+    def assert_tool_call_order(self, *names: str) -> "AssertionProxy":
+        """Assert tools were called in *names* order (allowing other calls between them).
+
+        Unlike ``assert_tool_sequence``, this is a partial-order check — other
+        tools may appear between the specified ones::
+
+            # search must come before summarize, but other tools can appear in between
+            probe.assert_tool_call_order("search", "summarize")
+        """
+        actual = self._tools_in_call_order()
+        pos = 0
+        for name in names:
+            found = next((i for i in range(pos, len(actual)) if actual[i] == name), None)
+            assert found is not None, (
+                f"agentprobe: tool '{name}' not found after position {pos} in call order {actual}"
+            )
+            pos = found + 1
+        return self
+
+    def assert_no_empty_tool_inputs(self) -> "AssertionProxy":
+        """Assert every tool call had at least one input argument.
+
+        Catches agents calling tools with empty ``{}`` inputs::
+
+            probe.assert_no_empty_tool_inputs()
+        """
+        for i, call in enumerate(self._calls):
+            for choice in call.response.get("choices", []):
+                for tc in (choice.get("message", {}).get("tool_calls") or []):
+                    name = tc["function"]["name"]
+                    try:
+                        args = json.loads(tc["function"].get("arguments", "{}"))
+                    except (json.JSONDecodeError, TypeError):
+                        args = {}
+                    assert args, (
+                        f"agentprobe: call {i + 1} tool '{name}' was called with empty input"
+                    )
+        return self
+
+    def assert_average_latency_under(self, ms: float) -> "AssertionProxy":
+        """Assert the average ``duration_ms`` across all calls is under *ms*.
+
+        Only counts calls that have a recorded duration::
+
+            probe.assert_average_latency_under(2000)  # avg under 2 s
+        """
+        durations = [c.duration_ms for c in self._calls if c.duration_ms is not None]
+        if not durations:
+            return self
+        avg = sum(durations) / len(durations)
+        assert avg <= ms, (
+            f"agentprobe: average latency {avg:.1f}ms exceeds limit {ms:.1f}ms "
+            f"({len(durations)} call(s) measured)"
+        )
+        return self
+
     def assert_no_repeated_messages(self) -> "AssertionProxy":
         """Assert no consecutive pair of calls sent the same last user message.
 
@@ -887,6 +943,14 @@ class AssertionProxy:
         return self
 
     # ── Helpers ───────────────────────────────────────────────────────────
+
+    def _tools_in_call_order(self) -> List[str]:
+        tools = []
+        for call in self._calls:
+            for choice in call.response.get("choices", []):
+                for tc in (choice.get("message", {}).get("tool_calls") or []):
+                    tools.append(tc["function"]["name"])
+        return tools
 
     def _all_tool_names(self):
         names = set()
@@ -1630,6 +1694,42 @@ class AnthropicAssertionProxy:
             )
         return self
 
+    def assert_tool_call_order(self, *names: str) -> "AnthropicAssertionProxy":
+        """Assert tools were called in *names* order (partial-order, gaps allowed)."""
+        actual = self._tools_in_call_order()
+        pos = 0
+        for name in names:
+            found = next((i for i in range(pos, len(actual)) if actual[i] == name), None)
+            assert found is not None, (
+                f"agentprobe: tool '{name}' not found after position {pos} in call order {actual}"
+            )
+            pos = found + 1
+        return self
+
+    def assert_no_empty_tool_inputs(self) -> "AnthropicAssertionProxy":
+        """Assert every tool call had at least one input argument."""
+        for i, call in enumerate(self._calls):
+            for block in (call.response.get("content") or []):
+                if block.get("type") == "tool_use":
+                    name = block["name"]
+                    inp = block.get("input") or {}
+                    assert inp, (
+                        f"agentprobe: call {i + 1} tool '{name}' was called with empty input"
+                    )
+        return self
+
+    def assert_average_latency_under(self, ms: float) -> "AnthropicAssertionProxy":
+        """Assert the average ``duration_ms`` across all calls is under *ms*."""
+        durations = [c.duration_ms for c in self._calls if c.duration_ms is not None]
+        if not durations:
+            return self
+        avg = sum(durations) / len(durations)
+        assert avg <= ms, (
+            f"agentprobe: average latency {avg:.1f}ms exceeds limit {ms:.1f}ms "
+            f"({len(durations)} call(s) measured)"
+        )
+        return self
+
     def assert_no_repeated_messages(self) -> "AnthropicAssertionProxy":
         """Assert no consecutive pair of calls sent the same last user message."""
         prev_last = None
@@ -1917,6 +2017,14 @@ class AnthropicAssertionProxy:
         }, indent=indent, default=str)
 
     # ── Helpers ───────────────────────────────────────────────────────────
+
+    def _tools_in_call_order(self) -> List[str]:
+        tools = []
+        for call in self._calls:
+            for block in (call.response.get("content") or []):
+                if block.get("type") == "tool_use":
+                    tools.append(block["name"])
+        return tools
 
     def _all_tool_names(self) -> set:
         names: set = set()

@@ -4,6 +4,23 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.14.0] — 2026-06-02
+
+### Added
+
+**AssertionProxy + AnthropicAssertionProxy**
+- `probe.assert_tool_call_order(*names)` — partial-order check; asserts tools were called in the given sequence with any tools allowed in between
+- `probe.assert_no_empty_tool_inputs()` — fails if any tool was called with empty `{}` inputs (catches under-specified tool calls)
+- `probe.assert_average_latency_under(ms)` — asserts the average `duration_ms` across all calls is below the limit; skips calls with no recorded duration
+
+**CLI**
+- `agentprobe record --max-calls N` — truncates fixture to the first N recorded calls; useful for capping long agent runs
+
+### Fixed
+- `assert_tool_call_order` and `assert_tool_sequence` now correctly use call-order rather than the alphabetically-sorted `tools_called` property; added `_tools_in_call_order()` helper to both `AssertionProxy` and `AnthropicAssertionProxy`
+
+---
+
 ## [0.13.0] — 2026-06-02
 
 ### Added
