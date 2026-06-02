@@ -633,6 +633,79 @@ def cmd_stats_by_date(args):
                   f"{e['tokens']:,} tokens  ${e['cost']:.4f}")
 
 
+def cmd_replay(args):
+    """Run a Python script in pure replay mode against a saved fixture."""
+    import runpy, time
+    import openai.resources.chat.completions
+    from agentprobe._session import _load_calls, _check_exists
+    from agentprobe._interceptor import _strict_replaying_context, replaying_context
+
+    fixture = Path(args.fixture)
+    _check_exists(fixture)
+    calls = _load_calls(fixture)
+
+    script = Path(args.script)
+    if not script.exists():
+        print(f"agentprobe: script not found: {args.script}", file=sys.stderr)
+        sys.exit(1)
+
+    env_file = getattr(args, "env", None)
+    if env_file:
+        import os as _os
+        env_path = Path(env_file)
+        if not env_path.exists():
+            print(f"agentprobe: env file not found: {env_file}", file=sys.stderr)
+            sys.exit(1)
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            _os.environ.setdefault(key.strip(), value.strip())
+
+    provider = getattr(args, "provider", "openai")
+    strict = getattr(args, "strict", False)
+    index: list = [0]
+
+    if provider == "anthropic":
+        from agentprobe._anthropic_interceptor import (
+            _anthropic_strict_replaying_context,
+            anthropic_replaying_context,
+        )
+        ctx = _anthropic_strict_replaying_context(calls, index) if strict else anthropic_replaying_context(calls)
+    else:
+        ctx = _strict_replaying_context(calls, index) if strict else replaying_context(calls)
+
+    script_source = script.read_text()
+    is_async = "asyncio.run(" in script_source or "async def main" in script_source
+
+    try:
+        with ctx:
+            try:
+                runpy.run_path(str(script), run_name="__main__")
+            except SystemExit as e:
+                if e.code not in (0, None):
+                    print(f"agentprobe: script exited with code {e.code}", file=sys.stderr)
+                    sys.exit(e.code)
+    except RuntimeError as e:
+        if "replay exhausted" in str(e):
+            print(f"agentprobe: {e}", file=sys.stderr)
+            sys.exit(1)
+        raise
+
+    consumed = index[0] if strict else len(calls)
+    if strict and index[0] < len(calls):
+        print(
+            f"agentprobe: strict replay — fixture has {len(calls)} call(s) "
+            f"but script only consumed {index[0]}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    async_note = " (async script)" if is_async else ""
+    print(f"agentprobe: replayed {consumed} call(s) from {fixture}{async_note}")
+
+
 def cmd_init(args):
     """Scaffold tests/fixtures/ and a sample conftest.py."""
     fixtures_dir = Path("tests/fixtures")
@@ -734,8 +807,20 @@ def cmd_record(args):
 
     timeout_s = getattr(args, "timeout", None)
 
+    capture_stdout = getattr(args, "capture_stdout", False)
+    import io, contextlib
+    stdout_buf = io.StringIO() if capture_stdout else None
+    stderr_buf = io.StringIO() if capture_stdout else None
+
     def _run_script():
         runpy.run_path(str(script), run_name="__main__")
+
+    def _run_with_capture():
+        if capture_stdout:
+            with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+                _run_script()
+        else:
+            _run_script()
 
     with recording_context(calls):
         with patch.object(openai.resources.chat.completions.AsyncCompletions, "create", _async_patch):
@@ -744,7 +829,7 @@ def cmd_record(args):
                 exc_box: list = []
                 def _target():
                     try:
-                        _run_script()
+                        _run_with_capture()
                     except SystemExit:
                         pass
                     except Exception as e:
@@ -759,7 +844,7 @@ def cmd_record(args):
                     raise exc_box[0]
             else:
                 try:
-                    _run_script()
+                    _run_with_capture()
                 except SystemExit:
                     pass
 
@@ -768,21 +853,33 @@ def cmd_record(args):
     async_note = " (async script)" if is_async else ""
     gz_note = " [gzip]" if output.suffix == ".gz" else ""
 
+    meta_extra = None
+    if capture_stdout and (stdout_buf.getvalue() or stderr_buf.getvalue()):
+        meta_extra = {}
+        if stdout_buf.getvalue():
+            meta_extra["stdout"] = stdout_buf.getvalue()
+        if stderr_buf.getvalue():
+            meta_extra["stderr"] = stderr_buf.getvalue()
+
     if dry_run:
         print(f"agentprobe: dry-run — would record {len(calls)} call(s) to {output}{async_note}")
         for i, c in enumerate(calls, 1):
             model = c.request.get("model", "?")
             tokens = (c.response.get("usage") or {}).get("prompt_tokens", "?")
             print(f"  call {i}: model={model} prompt_tokens={tokens}")
+        if capture_stdout and meta_extra:
+            print(f"  captured stdout ({len(meta_extra.get('stdout',''))} chars), "
+                  f"stderr ({len(meta_extra.get('stderr',''))} chars)")
     elif append:
         from agentprobe._session import _load_calls as _lc
         existing = _lc(output) if output.exists() else []
-        _save_calls(existing + calls, output)
+        _save_calls(existing + calls, output, meta_extra)
         print(f"agentprobe: appended {len(calls)} call(s) to {output} "
               f"(total: {len(existing) + len(calls)}){async_note}{gz_note}")
     else:
-        _save_calls(calls, output)
-        print(f"agentprobe: recorded {len(calls)} call(s) to {output}{async_note}{gz_note}")
+        _save_calls(calls, output, meta_extra)
+        stdout_note = " [+stdout]" if meta_extra else ""
+        print(f"agentprobe: recorded {len(calls)} call(s) to {output}{async_note}{gz_note}{stdout_note}")
 
 
 def cmd_record_watch(args):
@@ -884,7 +981,23 @@ def main():
                           help="Run script and show what would be captured, but don't save")
     p_record.add_argument("--append", action="store_true",
                           help="Append captured calls to an existing fixture (don't overwrite)")
+    p_record.add_argument("--capture-stdout", dest="capture_stdout", action="store_true",
+                          help="Capture script stdout/stderr and store in fixture _meta header")
     p_record.set_defaults(func=lambda a: cmd_record_watch(a) if a.watch else cmd_record(a))
+
+    p_replay = sub.add_parser(
+        "replay",
+        help="Run a Python script in pure replay mode against a saved fixture",
+    )
+    p_replay.add_argument("fixture", help="Path to .jsonl fixture file")
+    p_replay.add_argument("script", help="Path to Python script to run against the fixture")
+    p_replay.add_argument("--provider", choices=["openai", "anthropic"], default="openai",
+                          help="API provider to intercept (default: openai)")
+    p_replay.add_argument("--strict", action="store_true",
+                          help="Fail if the script doesn't consume every call in the fixture")
+    p_replay.add_argument("--env", metavar="FILE",
+                          help="Load environment variables from FILE before running")
+    p_replay.set_defaults(func=cmd_replay)
 
     p_validate = sub.add_parser("validate", help="Validate a fixture file for correctness")
     p_validate.add_argument("fixture", help="Path to .jsonl fixture file")

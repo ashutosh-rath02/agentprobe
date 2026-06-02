@@ -4,6 +4,28 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.10.0] — 2026-06-02
+
+### Added
+
+**CLI**
+- `agentprobe replay <fixture> <script>` — run a Python script in pure replay mode without pytest; supports `--provider anthropic`, `--strict` (fail if not all calls consumed), `--env FILE`
+- `agentprobe record --capture-stdout` — capture script stdout/stderr and store in `_meta.stdout` / `_meta.stderr` inside the fixture; outputs `[+stdout]` note on save
+
+**AssertionProxy** (OpenAI)
+- `probe.assert_tool_called_before_output()` — assert at least one tool was called AND the final response contains text output; verifies the canonical agentic pattern
+- `probe.call(n).tool_call_inputs` — already worked via single-call proxy; confirmed and tested
+
+**AnthropicAssertionProxy**
+- `probe.assert_tool_called_before_output()` — same assertion for Anthropic sessions
+- `probe.call(n).tool_call_inputs` — confirmed working on per-call proxy
+
+**AnthropicMultiSession**
+- Per-client instance-level patching for multi-agent Anthropic scenarios (mirrors `MultiSession` for OpenAI)
+- `record(client, path)`, `replay(client, path)`, `auto(client, path)`, `replay_chain(*pairs)`, `async_record`, `async_replay`
+
+---
+
 ## [0.9.0] — 2026-06-02
 
 ### Added

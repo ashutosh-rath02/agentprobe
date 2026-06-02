@@ -1,6 +1,6 @@
 # agentprobe — Project Roadmap
 
-## Status: v0.9.0
+## Status: v0.10.0
 
 ---
 
@@ -65,17 +65,26 @@
 
 ---
 
-## Next — v0.10.0
+## Done (v0.10.0)
+- [x] `agentprobe replay <fixture> <script>` CLI command
+- [x] `agentprobe record --capture-stdout`
+- [x] `AnthropicMultiSession`
+- [x] `probe.assert_tool_called_before_output()` (OpenAI + Anthropic)
+- [x] `probe.call(n).tool_call_inputs` confirmed working
+
+---
+
+## Next — v0.11.0
 
 ### High priority
-- [ ] **`agentprobe record --capture-stdout`** — capture script stdout/stderr into `_meta.stdout`; useful for debugging
-- [ ] **`agentprobe replay <fixture> <script>`** — CLI command to run a script in pure replay mode without pytest
-- [ ] **`AnthropicMultiSession`** — per-client patching for multi-agent Anthropic setups (mirrors `MultiSession` for OpenAI)
+- [ ] **Anthropic streaming support** — record/replay `messages.create(stream=True)` / `messages.stream()`; parity with OpenAI streaming
+- [ ] **`agentprobe show` Anthropic support** — pretty-print Anthropic fixtures; currently only renders OpenAI `choices` format
+- [ ] **`probe.assert_response_time_under(ms)`** — per-call wall-clock assertion; useful for latency SLAs in CI
 
 ### Medium priority
-- [ ] **`probe.call(n).tool_call_inputs`** — expose `tool_call_inputs` on the scoped per-call proxy (currently full-session only)
-- [ ] **`probe.assert_tool_called_before_output()`** — assert no tool was called after the final text response (guards against weird finish ordering)
-- [ ] **Anthropic streaming support** — record/replay `messages.stream()` / `create(stream=True)` calls
+- [ ] **`agentprobe diff` Anthropic support** — diff two Anthropic fixtures by content / tool use blocks
+- [ ] **`probe.assert_tool_input_schema(name, schema)`** — validate tool call inputs against a JSON Schema
+- [ ] **`agentprobe record --capture-stdout` show in `show` command** — display captured stdout alongside calls
 
 ### Lower priority
 - [ ] **`agentprobe record --watch` with real file watcher** — swap polling for `watchdog` event-based re-recording
@@ -83,6 +92,6 @@
 
 ---
 
-## Publish checklist (v0.9.0)
-- [ ] `git tag v0.9.0 && git push --tags`
+## Publish checklist (v0.10.0)
+- [ ] `git tag v0.10.0 && git push --tags`
 - [ ] GitHub release with CHANGELOG excerpt

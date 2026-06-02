@@ -379,6 +379,22 @@ class AssertionProxy:
 
         return self
 
+    def assert_tool_called_before_output(self) -> "AssertionProxy":
+        """Assert at least one tool was called AND the final response contains text output.
+
+        Verifies the canonical agentic pattern: tool calls first, text answer last::
+
+            probe.assert_tool_called_before_output()
+        """
+        assert self.tools_called, "agentprobe: no tool calls found in session"
+        last_choices = self._calls[-1].response.get("choices", [])
+        has_final_text = any(ch["message"].get("content") for ch in last_choices)
+        assert has_final_text, (
+            "agentprobe: expected final response to contain text output after tool calls, "
+            "but the last call has no text content"
+        )
+        return self
+
     # ── Duplicate / growth assertions ─────────────────────────────────────
 
     def assert_no_duplicate_tool_calls(self) -> "AssertionProxy":
@@ -768,21 +784,23 @@ def _load_calls(path: Path) -> List[RecordedCall]:
         ]
 
 
-def _build_meta_line() -> str:
+def _build_meta_line(extra: Optional[Dict[str, Any]] = None) -> str:
     """Return a JSON _meta header line with version + timestamp."""
     from agentprobe import __version__
-    return json.dumps({
-        "_meta": {
-            "agentprobe_version": __version__,
-            "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "python_version": __import__("sys").version.split()[0],
-        }
-    })
+    meta: Dict[str, Any] = {
+        "agentprobe_version": __version__,
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "python_version": __import__("sys").version.split()[0],
+    }
+    if extra:
+        meta.update(extra)
+    return json.dumps({"_meta": meta})
 
 
-def _save_calls(calls: List[RecordedCall], path: Path) -> None:
+def _save_calls(calls: List[RecordedCall], path: Path,
+                meta_extra: Optional[Dict[str, Any]] = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [_build_meta_line()]
+    lines = [_build_meta_line(meta_extra)]
     for call in calls:
         data: dict = {
             "request": call.request,
@@ -1458,6 +1476,17 @@ class AnthropicAssertionProxy:
             )
         return self
 
+    def assert_tool_called_before_output(self) -> "AnthropicAssertionProxy":
+        """Assert at least one tool was called AND the final response contains text output."""
+        assert self.tools_called, "agentprobe: no tool calls found in session"
+        last_blocks = self._calls[-1].response.get("content") or []
+        has_final_text = any(b.get("type") == "text" and b.get("text") for b in last_blocks)
+        assert has_final_text, (
+            "agentprobe: expected final response to contain text output after tool calls, "
+            "but the last call has no text blocks"
+        )
+        return self
+
     # ── Duplicate / growth assertions ─────────────────────────────────────
 
     def assert_no_duplicate_tool_calls(self) -> "AnthropicAssertionProxy":
@@ -1785,3 +1814,176 @@ class AnthropicSession:
         else:
             async with self.async_record(path) as proxy:
                 yield proxy
+
+
+# ── AnthropicMultiSession ─────────────────────────────────────────────────────
+
+def _make_anthropic_sync_recorder(calls: List[RecordedCall], original):
+    from ._anthropic_interceptor import _serialize_anthropic_request
+    def patched(**kwargs):
+        import time as _time
+        start = _time.time()
+        resp = original(**kwargs)
+        calls.append(RecordedCall(
+            request=_serialize_anthropic_request(kwargs),
+            response=resp.model_dump(),
+            duration_ms=(_time.time() - start) * 1000,
+        ))
+        return resp
+    return patched
+
+
+def _make_anthropic_sync_replayer(calls: List[RecordedCall], index: List[int]):
+    from ._anthropic_interceptor import _deserialize_anthropic_response, _serialize_anthropic_request
+    def patched(**kwargs):
+        if index[0] >= len(calls):
+            raise RuntimeError(
+                f"agentprobe: replay exhausted — fixture has {len(calls)} call(s) "
+                f"but the agent made more. Re-record or update the fixture."
+            )
+        call = calls[index[0]]
+        index[0] += 1
+        call.request = _serialize_anthropic_request(kwargs)
+        return _deserialize_anthropic_response(call.response)
+    return patched
+
+
+def _make_anthropic_async_recorder(calls: List[RecordedCall], original):
+    from ._anthropic_interceptor import _serialize_anthropic_request
+    async def patched(**kwargs):
+        import time as _time
+        start = _time.time()
+        resp = await original(**kwargs)
+        calls.append(RecordedCall(
+            request=_serialize_anthropic_request(kwargs),
+            response=resp.model_dump(),
+            duration_ms=(_time.time() - start) * 1000,
+        ))
+        return resp
+    return patched
+
+
+def _make_anthropic_async_replayer(calls: List[RecordedCall], index: List[int]):
+    from ._anthropic_interceptor import _deserialize_anthropic_response, _serialize_anthropic_request
+    async def patched(**kwargs):
+        if index[0] >= len(calls):
+            raise RuntimeError(
+                f"agentprobe: replay exhausted — fixture has {len(calls)} call(s) "
+                f"but the agent made more. Re-record or update the fixture."
+            )
+        call = calls[index[0]]
+        index[0] += 1
+        call.request = _serialize_anthropic_request(kwargs)
+        return _deserialize_anthropic_response(call.response)
+    return patched
+
+
+class AnthropicMultiSession:
+    """Per-client record/replay for multi-agent Anthropic scenarios.
+
+    Patches each Anthropic client instance independently so that two agents
+    using different clients can be replayed simultaneously without interference.
+
+    Usage::
+
+        multi = AnthropicMultiSession()
+        orchestrator = anthropic.Anthropic(api_key="...")
+        subagent    = anthropic.Anthropic(api_key="...")
+
+        with multi.replay(orchestrator, "fixtures/orch.jsonl") as probe_orch:
+            with multi.replay(subagent, "fixtures/sub.jsonl") as probe_sub:
+                run_pipeline(orchestrator, subagent)
+
+        probe_orch.assert_tool_called("search")
+        probe_sub.assert_max_iterations(3)
+    """
+
+    # ── Sync ─────────────────────────────────────────────────────────────
+
+    @contextmanager
+    def record(self, client, path: Union[str, Path]):
+        """Intercept *client*'s Anthropic messages and save to *path* (JSONL)."""
+        path = Path(path)
+        calls: List[RecordedCall] = []
+        original = client.messages.create
+        with patch.object(client.messages, "create",
+                          _make_anthropic_sync_recorder(calls, original)):
+            yield AnthropicAssertionProxy(calls)
+        _save_calls(calls, path)
+
+    @contextmanager
+    def replay(self, client, path: Union[str, Path]):
+        """Replay *client*'s messages from a previously recorded fixture."""
+        path = Path(path)
+        _check_exists(path)
+        calls = _load_calls(path)
+        with patch.object(client.messages, "create",
+                          _make_anthropic_sync_replayer(calls, [0])):
+            yield AnthropicAssertionProxy(calls)
+
+    @contextmanager
+    def auto(self, client, path: Union[str, Path]):
+        """Record if fixture missing or AGENTPROBE_UPDATE=1; replay otherwise."""
+        path = Path(path)
+        if path.exists() and not _should_update():
+            with self.replay(client, path) as proxy:
+                yield proxy
+        else:
+            with self.record(client, path) as proxy:
+                yield proxy
+
+    @contextmanager
+    def replay_chain(self, *client_path_pairs):
+        """Replay chained fixtures for multiple Anthropic clients simultaneously.
+
+        Each argument is a ``(client, paths)`` pair where *paths* is a single
+        path or list of paths concatenated in order for that client::
+
+            with multi.replay_chain(
+                (orchestrator, ["warmup.jsonl", "task.jsonl"]),
+                (subagent, "sub.jsonl"),
+            ) as probes:
+                run_pipeline(orchestrator, subagent)
+        """
+        all_patches = []
+        all_probes: Dict[Any, AnthropicAssertionProxy] = {}
+
+        for client, paths in client_path_pairs:
+            path_list = paths if isinstance(paths, list) else [paths]
+            calls: List[RecordedCall] = []
+            for p in path_list:
+                _check_exists(Path(p))
+                calls.extend(_load_calls(Path(p)))
+            pat = patch.object(client.messages, "create",
+                               _make_anthropic_sync_replayer(calls, [0]))
+            pat.start()
+            all_patches.append(pat)
+            all_probes[client] = AnthropicAssertionProxy(calls)
+
+        yield all_probes
+
+        for pat in all_patches:
+            pat.stop()
+
+    # ── Async ─────────────────────────────────────────────────────────────
+
+    @asynccontextmanager
+    async def async_record(self, client, path: Union[str, Path]):
+        """Async version of record() — for agents using ``AsyncAnthropic``."""
+        path = Path(path)
+        calls: List[RecordedCall] = []
+        original = client.messages.create
+        with patch.object(client.messages, "create",
+                          _make_anthropic_async_recorder(calls, original)):
+            yield AnthropicAssertionProxy(calls)
+        _save_calls(calls, path)
+
+    @asynccontextmanager
+    async def async_replay(self, client, path: Union[str, Path]):
+        """Async version of replay() — for agents using ``AsyncAnthropic``."""
+        path = Path(path)
+        _check_exists(path)
+        calls = _load_calls(path)
+        with patch.object(client.messages, "create",
+                          _make_anthropic_async_replayer(calls, [0])):
+            yield AnthropicAssertionProxy(calls)
