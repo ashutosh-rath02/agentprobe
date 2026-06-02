@@ -1,6 +1,6 @@
 # agentprobe — Project Roadmap
 
-## Status: v0.12.0
+## Status: v0.13.0
 
 ---
 
@@ -74,24 +74,24 @@
 
 ---
 
-## Done (v0.12.0)
-- [x] `record --provider anthropic` CLI
-- [x] `assert_no_hallucinated_tool_calls`, `assert_max_tool_calls`, `assert_system_prompt_present`
-- [x] `stats --by-model`
+## Done (v0.13.0)
+- [x] `assert_no_repeated_messages`, `assert_output_language`, `assert_token_ratio`
+- [x] `agentprobe validate` Anthropic support (+ `_meta` skip fix)
+- [x] `agentprobe fixtures --orphaned`
 
 ---
 
-## Next — v0.13.0
+## Next — v0.14.0
 
 ### High priority
-- [ ] **`probe.assert_output_language(lang)`** — detect response language using `langdetect`; useful for multilingual agents
-- [ ] **`agentprobe validate` Anthropic support** — structural linting for Anthropic fixtures
-- [ ] **`probe.assert_no_repeated_messages()`** — detect when identical user messages are sent across turns (stuck loop signal)
+- [ ] **`probe.assert_tool_call_order(*names)`** — assert tools were called in a specific partial order (not necessarily consecutive)
+- [ ] **`agentprobe compare <fixture_a> <fixture_b>`** — deep semantic comparison with score (beyond structural diff)
+- [ ] **`probe.assert_no_empty_tool_inputs()`** — assert every tool call had non-empty input args
 
 ### Medium priority
-- [ ] **`agentprobe fixtures --orphaned`** — list fixture files with no corresponding test reference
-- [ ] **`probe.assert_token_ratio(call_n, max_ratio)`** — per-call token growth relative to call 0
 - [ ] **`messages.stream()` recording support** — higher-level streaming via `MessageStreamManager`
+- [ ] **`agentprobe record --max-calls N`** — stop recording after N API calls
+- [ ] **`probe.assert_average_latency_under(ms)`** — average `duration_ms` assertion across all calls
 
 ### Lower priority
 - [ ] **`agentprobe record --watch` real file watcher** — swap polling for `watchdog`
@@ -99,6 +99,6 @@
 
 ---
 
-## Publish checklist (v0.12.0)
-- [ ] `git tag v0.12.0 && git push --tags`
+## Publish checklist (v0.13.0)
+- [ ] `git tag v0.13.0 && git push --tags`
 - [ ] GitHub release with CHANGELOG excerpt

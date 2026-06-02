@@ -545,28 +545,61 @@ def cmd_validate(args):
             errors.append(f"line {i}: invalid JSON — {e}")
             continue
 
+        if "_meta" in data:
+            continue  # skip meta header lines
+
         for field in ("request", "response"):
             if field not in data:
                 errors.append(f"line {i}: missing '{field}' field")
 
         # Attempt Pydantic deserialization of the assembled response
         resp = data.get("response", {})
-        try:
-            oai.ChatCompletion.model_validate(resp)
-        except Exception as e:
-            errors.append(f"line {i}: response failed Pydantic validation — {e}")
 
-        # Validate each streaming chunk if present
-        chunks = data.get("chunks")
-        if chunks is not None:
-            if not isinstance(chunks, list):
-                errors.append(f"line {i}: 'chunks' must be a list")
-            else:
-                for j, chunk in enumerate(chunks):
-                    try:
-                        oai.ChatCompletionChunk.model_validate(chunk)
-                    except Exception as e:
-                        errors.append(f"line {i} chunk {j}: Pydantic validation failed — {e}")
+        if _is_anthropic_response(resp):
+            # Anthropic format
+            try:
+                import anthropic.types as _at
+                _at.Message.model_validate(resp)
+            except Exception as e:
+                errors.append(f"line {i}: Anthropic response failed Pydantic validation — {e}")
+            chunks = data.get("chunks")
+            if chunks is not None:
+                if not isinstance(chunks, list):
+                    errors.append(f"line {i}: 'chunks' must be a list")
+                else:
+                    _event_mapping = {
+                        "message_start": "RawMessageStartEvent",
+                        "content_block_start": "RawContentBlockStartEvent",
+                        "content_block_delta": "RawContentBlockDeltaEvent",
+                        "content_block_stop": "RawContentBlockStopEvent",
+                        "message_delta": "RawMessageDeltaEvent",
+                        "message_stop": "RawMessageStopEvent",
+                    }
+                    for j, chunk in enumerate(chunks):
+                        etype = chunk.get("type", "")
+                        cls_name = _event_mapping.get(etype)
+                        if cls_name:
+                            try:
+                                getattr(_at, cls_name).model_validate(chunk)
+                            except Exception as e:
+                                errors.append(f"line {i} chunk {j}: Anthropic event validation failed — {e}")
+        else:
+            try:
+                oai.ChatCompletion.model_validate(resp)
+            except Exception as e:
+                errors.append(f"line {i}: response failed Pydantic validation — {e}")
+
+            # Validate each streaming chunk if present
+            chunks = data.get("chunks")
+            if chunks is not None:
+                if not isinstance(chunks, list):
+                    errors.append(f"line {i}: 'chunks' must be a list")
+                else:
+                    for j, chunk in enumerate(chunks):
+                        try:
+                            oai.ChatCompletionChunk.model_validate(chunk)
+                        except Exception as e:
+                            errors.append(f"line {i} chunk {j}: Pydantic validation failed — {e}")
 
     if errors:
         for err in errors:
@@ -581,9 +614,13 @@ def cmd_validate(args):
             data = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if "_meta" in data:
+            continue
         if data.get("duration_ms") is None:
             warnings.append(f"line {i}: no duration_ms (recorded without timing — replay-only fixture)")
-        if not data.get("request", {}).get("model"):
+        resp = data.get("response", {})
+        model = resp.get("model") or data.get("request", {}).get("model")
+        if not model:
             warnings.append(f"line {i}: request has no model field")
 
     for w in warnings:
@@ -593,9 +630,10 @@ def cmd_validate(args):
         print(f"\nagentprobe: {len(warnings)} warning(s) treated as errors (--strict)", file=sys.stderr)
         sys.exit(1)
 
-    streaming = sum(1 for d in [json.loads(l) for l in lines] if d.get("chunks"))
+    data_lines = [json.loads(l) for l in lines if "_meta" not in json.loads(l)]
+    streaming = sum(1 for d in data_lines if d.get("chunks"))
     status = f"OK ({len(warnings)} warning(s))" if warnings else "OK"
-    print(f"agentprobe: {args.fixture} {status}  ({len(lines)} call(s), {streaming} streaming)")
+    print(f"agentprobe: {args.fixture} {status}  ({len(data_lines)} call(s), {streaming} streaming)")
 
 
 def cmd_diff_by_call(args):
@@ -717,6 +755,46 @@ def cmd_stats_by_date(args):
             e = by_date[date]
             print(f"  {date}  {e['fixtures']} fixture(s)  {e['calls']} call(s)  "
                   f"{e['tokens']:,} tokens  ${e['cost']:.4f}")
+
+
+def cmd_fixtures_orphaned(args):
+    """List fixture files not referenced in any Python test file."""
+    directory = Path(args.directory)
+    if not directory.is_dir():
+        print(f"agentprobe: not a directory: {args.directory}", file=sys.stderr)
+        sys.exit(1)
+
+    # Collect all fixture filenames (stem + suffix combos users might write)
+    fixtures = list(directory.rglob("*.jsonl")) + list(directory.rglob("*.jsonl.gz"))
+
+    # Collect all Python test file content under tests/
+    test_root = Path("tests")
+    test_content = ""
+    if test_root.is_dir():
+        for pyfile in test_root.rglob("*.py"):
+            try:
+                test_content += pyfile.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                pass
+
+    orphaned = []
+    for fixture in sorted(fixtures):
+        name = fixture.name
+        stem = fixture.stem  # e.g. "my_agent" from "my_agent.jsonl"
+        if name not in test_content and stem not in test_content:
+            orphaned.append(str(fixture))
+
+    if not orphaned:
+        print(f"agentprobe: no orphaned fixtures found in {args.directory}")
+        return
+
+    if getattr(args, "json", False):
+        print(json.dumps({"orphaned": orphaned}))
+    else:
+        print(f"Orphaned fixtures (not referenced in tests/):\n")
+        for path in orphaned:
+            print(f"  {path}")
+        print(f"\n{len(orphaned)} orphaned fixture(s)")
 
 
 def cmd_stats_by_model(args):
@@ -1106,8 +1184,11 @@ def main():
     p_list.add_argument("--json", action="store_true", help="Output as machine-readable JSON")
     p_list.add_argument("--clean", action="store_true", help="Remove stale .lock files")
     p_list.add_argument("--by-date", action="store_true", help="Group stats by recording date")
+    p_list.add_argument("--orphaned", action="store_true",
+                        help="List fixture files not referenced in any test file")
     p_list.set_defaults(func=lambda a: cmd_fixtures_clean(a) if a.clean else (
-        cmd_stats_by_date(a) if a.by_date else cmd_fixtures_list(a)))
+        cmd_stats_by_date(a) if a.by_date else (
+        cmd_fixtures_orphaned(a) if a.orphaned else cmd_fixtures_list(a))))
 
     p_stats = sub.add_parser("stats", help="Aggregate stats across all fixtures in a directory")
     p_stats.add_argument("directory", nargs="?", default="tests/fixtures",

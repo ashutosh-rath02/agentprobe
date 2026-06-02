@@ -4,6 +4,23 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.13.0] — 2026-06-02
+
+### Added
+
+**AssertionProxy + AnthropicAssertionProxy**
+- `probe.assert_no_repeated_messages()` — fails if any consecutive calls sent identical last user messages; detects stuck-loop agents
+- `probe.assert_output_language(lang)` — detects response language via `langdetect` (optional dep); raises `ImportError` if not installed
+- `probe.assert_token_ratio(call_n, max_ratio)` — asserts call N used at most `max_ratio × call 0` tokens; per-call growth guard relative to baseline
+
+**CLI: validate Anthropic support**
+- `agentprobe validate` now auto-detects Anthropic fixture format and validates with `anthropic.types.Message.model_validate`; validates streaming chunks against `Raw*Event` Pydantic types; correctly skips `_meta` header lines in both error-checking and lint passes
+
+**CLI: fixtures --orphaned**
+- `agentprobe fixtures --orphaned [dir]` — lists `.jsonl`/`.jsonl.gz` fixture files not referenced (by name or stem) in any Python test file under `tests/`; `--json` for machine-readable output
+
+---
+
 ## [0.12.0] — 2026-06-02
 
 ### Added

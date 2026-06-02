@@ -379,6 +379,69 @@ class AssertionProxy:
 
         return self
 
+    def assert_no_repeated_messages(self) -> "AssertionProxy":
+        """Assert no consecutive pair of calls sent the same last user message.
+
+        Catches agents stuck in a loop re-sending the identical prompt::
+
+            probe.assert_no_repeated_messages()
+        """
+        prev_last = None
+        for i, call in enumerate(self._calls):
+            messages = call.request.get("messages") or []
+            user_msgs = [m.get("content") for m in messages if m.get("role") == "user"]
+            last = user_msgs[-1] if user_msgs else None
+            if last is not None and last == prev_last:
+                raise AssertionError(
+                    f"agentprobe: call {i + 1} repeated the same user message as call {i}: "
+                    f"{last!r:.80}"
+                )
+            if last is not None:
+                prev_last = last
+        return self
+
+    def assert_output_language(self, lang: str) -> "AssertionProxy":
+        """Assert the final text output is in *lang* (ISO 639-1 code, e.g. ``'en'``).
+
+        Requires ``langdetect`` (``pip install langdetect``)::
+
+            probe.assert_output_language("en")  # assert agent replied in English
+        """
+        try:
+            from langdetect import detect
+        except ImportError:
+            raise ImportError(
+                "agentprobe: langdetect is required for assert_output_language. "
+                "Install it with: pip install langdetect"
+            )
+        text = self.final_output
+        assert text, "agentprobe: no text output found to check language"
+        detected = detect(text)
+        assert detected == lang, (
+            f"agentprobe: expected output language '{lang}', detected '{detected}'. "
+            f"Output: {text[:100]!r}"
+        )
+        return self
+
+    def assert_token_ratio(self, call_n: int, max_ratio: float) -> "AssertionProxy":
+        """Assert call *call_n* used at most *max_ratio* times the prompt tokens of call 0.
+
+        Useful as a per-call context-growth guard relative to the first call::
+
+            probe.assert_token_ratio(2, 3.0)  # call 2 must use <3x tokens of call 0
+        """
+        if len(self._calls) < 2 or call_n >= len(self._calls):
+            return self
+        base = (self._calls[0].response.get("usage") or {}).get("prompt_tokens")
+        curr = (self._calls[call_n].response.get("usage") or {}).get("prompt_tokens")
+        if base and curr:
+            ratio = curr / base
+            assert ratio <= max_ratio, (
+                f"agentprobe: call {call_n + 1} used {ratio:.2f}x the tokens of call 1 "
+                f"(limit: {max_ratio}x). {base} -> {curr} prompt tokens."
+            )
+        return self
+
     def assert_no_hallucinated_tool_calls(self, *allowed: str) -> "AssertionProxy":
         """Assert every tool call used a name from *allowed*.
 
@@ -1564,6 +1627,54 @@ class AnthropicAssertionProxy:
             assert has_text or has_tools, (
                 f"agentprobe: call {i + 1} returned an empty response "
                 f"(no text blocks and no tool_use blocks)"
+            )
+        return self
+
+    def assert_no_repeated_messages(self) -> "AnthropicAssertionProxy":
+        """Assert no consecutive pair of calls sent the same last user message."""
+        prev_last = None
+        for i, call in enumerate(self._calls):
+            messages = call.request.get("messages") or []
+            user_msgs = [m.get("content") for m in messages if m.get("role") == "user"]
+            last = user_msgs[-1] if user_msgs else None
+            if last is not None and last == prev_last:
+                raise AssertionError(
+                    f"agentprobe: call {i + 1} repeated the same user message as call {i}: "
+                    f"{last!r:.80}"
+                )
+            if last is not None:
+                prev_last = last
+        return self
+
+    def assert_output_language(self, lang: str) -> "AnthropicAssertionProxy":
+        """Assert the final text output is in *lang* (ISO 639-1 code)."""
+        try:
+            from langdetect import detect
+        except ImportError:
+            raise ImportError(
+                "agentprobe: langdetect is required for assert_output_language. "
+                "Install it with: pip install langdetect"
+            )
+        text = self.final_output
+        assert text, "agentprobe: no text output found to check language"
+        detected = detect(text)
+        assert detected == lang, (
+            f"agentprobe: expected output language '{lang}', detected '{detected}'. "
+            f"Output: {text[:100]!r}"
+        )
+        return self
+
+    def assert_token_ratio(self, call_n: int, max_ratio: float) -> "AnthropicAssertionProxy":
+        """Assert call *call_n* used at most *max_ratio* times the input tokens of call 0."""
+        if len(self._calls) < 2 or call_n >= len(self._calls):
+            return self
+        base = (self._calls[0].response.get("usage") or {}).get("input_tokens")
+        curr = (self._calls[call_n].response.get("usage") or {}).get("input_tokens")
+        if base and curr:
+            ratio = curr / base
+            assert ratio <= max_ratio, (
+                f"agentprobe: call {call_n + 1} used {ratio:.2f}x the tokens of call 1 "
+                f"(limit: {max_ratio}x). {base} -> {curr} input tokens."
             )
         return self
 
