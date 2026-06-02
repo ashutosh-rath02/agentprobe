@@ -379,6 +379,78 @@ class AssertionProxy:
 
         return self
 
+    def assert_tool_never_called_with(self, tool_name: str,
+                                      **forbidden_input: Any) -> "AssertionProxy":
+        """Assert *tool_name* was never called with all of *forbidden_input* key/values.
+
+        The inverse of ``assert_tool_called_with``::
+
+            # Assert agent never searched with safe_search disabled
+            probe.assert_tool_never_called_with("search", safe_search=False)
+        """
+        inputs = self._tool_inputs(tool_name)
+        for inp in inputs:
+            if all(inp.get(k) == v for k, v in forbidden_input.items()):
+                raise AssertionError(
+                    f"agentprobe: tool '{tool_name}' WAS called with forbidden input "
+                    f"{forbidden_input}. Actual: {inp}"
+                )
+        return self
+
+    def assert_response_format(self, fmt: str) -> "AssertionProxy":
+        """Assert the final output matches a named format: ``'json'`` or ``'markdown'``.
+
+        ``'json'`` — output must parse as valid JSON.
+        ``'markdown'`` — output must contain at least one Markdown heading or list.
+
+        ::
+
+            probe.assert_response_format("json")
+        """
+        text = self.final_output or ""
+        if fmt == "json":
+            try:
+                json.loads(text)
+            except json.JSONDecodeError as e:
+                raise AssertionError(
+                    f"agentprobe: expected output to be valid JSON: {e}. "
+                    f"Output: {text[:200]!r}"
+                ) from None
+        elif fmt == "markdown":
+            import re
+            has_heading = bool(re.search(r'^#{1,6} ', text, re.MULTILINE))
+            has_list = bool(re.search(r'^\s*[-*+] ', text, re.MULTILINE))
+            has_numbered = bool(re.search(r'^\s*\d+\. ', text, re.MULTILINE))
+            assert has_heading or has_list or has_numbered, (
+                f"agentprobe: expected output in markdown format (headings/lists), "
+                f"but none found. Output: {text[:200]!r}"
+            )
+        else:
+            raise ValueError(
+                f"agentprobe: unknown format {fmt!r}. Supported: 'json', 'markdown'"
+            )
+        return self
+
+    def assert_prompt_growth_bounded(self, max_ratio: float) -> "AssertionProxy":
+        """Assert each call's prompt tokens are < *max_ratio* × the previous call's.
+
+        More granular than ``assert_context_growth`` — checks every consecutive pair::
+
+            probe.assert_prompt_growth_bounded(2.0)  # no call may double the previous
+        """
+        prev: Optional[int] = None
+        for i, call in enumerate(self._calls):
+            curr = (call.response.get("usage") or {}).get("prompt_tokens")
+            if curr and prev:
+                ratio = curr / prev
+                assert ratio <= max_ratio, (
+                    f"agentprobe: prompt tokens grew {ratio:.2f}x from call {i} to {i + 1} "
+                    f"(limit: {max_ratio}x). {prev} → {curr}"
+                )
+            if curr:
+                prev = curr
+        return self
+
     def assert_first_response_latency_under(self, ms: float) -> "AssertionProxy":
         """Assert the first recorded call completed within *ms* milliseconds.
 
@@ -1912,6 +1984,59 @@ class AnthropicAssertionProxy:
                 f"agentprobe: call {i + 1} returned an empty response "
                 f"(no text blocks and no tool_use blocks)"
             )
+        return self
+
+    def assert_tool_never_called_with(self, tool_name: str,
+                                      **forbidden_input: Any) -> "AnthropicAssertionProxy":
+        """Assert *tool_name* was never called with all of *forbidden_input* key/values."""
+        inputs = self._tool_inputs(tool_name)
+        for inp in inputs:
+            if all(inp.get(k) == v for k, v in forbidden_input.items()):
+                raise AssertionError(
+                    f"agentprobe: tool '{tool_name}' WAS called with forbidden input "
+                    f"{forbidden_input}. Actual: {inp}"
+                )
+        return self
+
+    def assert_response_format(self, fmt: str) -> "AnthropicAssertionProxy":
+        """Assert the final output matches a named format: ``'json'`` or ``'markdown'``."""
+        text = self.final_output or ""
+        if fmt == "json":
+            try:
+                json.loads(text)
+            except json.JSONDecodeError as e:
+                raise AssertionError(
+                    f"agentprobe: expected output to be valid JSON: {e}. "
+                    f"Output: {text[:200]!r}"
+                ) from None
+        elif fmt == "markdown":
+            import re
+            has_heading = bool(re.search(r'^#{1,6} ', text, re.MULTILINE))
+            has_list = bool(re.search(r'^\s*[-*+] ', text, re.MULTILINE))
+            has_numbered = bool(re.search(r'^\s*\d+\. ', text, re.MULTILINE))
+            assert has_heading or has_list or has_numbered, (
+                f"agentprobe: expected output in markdown format (headings/lists), "
+                f"but none found. Output: {text[:200]!r}"
+            )
+        else:
+            raise ValueError(
+                f"agentprobe: unknown format {fmt!r}. Supported: 'json', 'markdown'"
+            )
+        return self
+
+    def assert_prompt_growth_bounded(self, max_ratio: float) -> "AnthropicAssertionProxy":
+        """Assert each call's input tokens are < *max_ratio* × the previous call's."""
+        prev: Optional[int] = None
+        for i, call in enumerate(self._calls):
+            curr = (call.response.get("usage") or {}).get("input_tokens")
+            if curr and prev:
+                ratio = curr / prev
+                assert ratio <= max_ratio, (
+                    f"agentprobe: input tokens grew {ratio:.2f}x from call {i} to {i + 1} "
+                    f"(limit: {max_ratio}x). {prev} → {curr}"
+                )
+            if curr:
+                prev = curr
         return self
 
     def assert_first_response_latency_under(self, ms: float) -> "AnthropicAssertionProxy":

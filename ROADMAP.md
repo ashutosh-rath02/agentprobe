@@ -1,6 +1,6 @@
 # agentprobe — Project Roadmap
 
-## Status: v0.18.0
+## Status: v0.19.0
 
 ---
 
@@ -74,23 +74,23 @@
 
 ---
 
-## Done (v0.18.0)
-- [x] `assert_first_response_latency_under`, `assert_output_contains_all`, `assert_tool_call_args_match`
-- [x] `fixtures --age-days N`, `migrate --strip-pii PATTERN`
+## Done (v0.19.0)
+- [x] `assert_tool_never_called_with`, `assert_response_format`, `assert_prompt_growth_bounded`
+- [x] `show --calls N`
 
 ---
 
-## Next — v0.19.0
+## Next — v0.20.0
 
 ### High priority
-- [ ] **`probe.assert_response_format(format)`** — assert final output matches a named format (e.g. `"json"`, `"markdown"`)
-- [ ] **`agentprobe fixtures --delete-old N`** — delete fixtures older than N days (destructive, requires `--confirm`)
-- [ ] **`probe.assert_tool_never_called_with(name, **kv)`** — negative input assertion
+- [ ] **`agentprobe fixtures --delete-old N --confirm`** — delete fixtures older than N days (requires explicit `--confirm`)
+- [ ] **`probe.assert_no_empty_system_prompt()`** — assert every call with a system message has non-empty content
+- [ ] **`probe.assert_tool_inputs_unique(name)`** — assert no two calls to *name* used identical inputs (deduplication signal)
 
 ### Medium priority
 - [ ] **`messages.stream()` recording support** — `MessageStreamManager` higher-level API
-- [ ] **`probe.assert_prompt_growth_bounded(max_ratio)`** — assert each call's prompt tokens are < max_ratio × previous
-- [ ] **`agentprobe show --calls N`** — show only the first/last N calls
+- [ ] **`probe.assert_output_not_empty()`** — assert final output is non-empty/non-whitespace
+- [ ] **`agentprobe fixtures --count`** — quick fixture count without listing
 
 ### Lower priority
 - [ ] **`agentprobe record --watch` real file watcher** — swap polling for `watchdog`
@@ -98,6 +98,6 @@
 
 ---
 
-## Publish checklist (v0.18.0)
-- [ ] `git tag v0.18.0 && git push --tags`
+## Publish checklist (v0.19.0)
+- [ ] `git tag v0.19.0 && git push --tags`
 - [ ] GitHub release with CHANGELOG excerpt

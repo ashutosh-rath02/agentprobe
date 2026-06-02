@@ -72,6 +72,9 @@ def _filter_calls(calls: list, model_filter: str | None) -> list:
 
 def cmd_show(args):
     calls = _filter_calls(_load(args.fixture), getattr(args, "model", None))
+    max_show = getattr(args, "calls", None)
+    if max_show is not None and max_show != 0:
+        calls = calls[:max_show] if max_show > 0 else calls[max_show:]
     meta = _load_meta(args.fixture)
     meta_str = ""
     if meta:
@@ -1426,6 +1429,8 @@ def main():
     p_show.add_argument("--model", metavar="MODEL", help="Filter to calls using this model")
     p_show.add_argument("--stdout", action="store_true",
                         help="Also print captured stdout/stderr from _meta header")
+    p_show.add_argument("--calls", type=int, metavar="N",
+                        help="Show only first N calls (negative = last N)")
     p_show.set_defaults(func=lambda a: cmd_show_json(a) if a.json else cmd_show(a))
 
     p_diff = sub.add_parser("diff", help="Compare two session fixtures")

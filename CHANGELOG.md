@@ -4,6 +4,20 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.19.0] — 2026-06-02
+
+### Added
+
+**AssertionProxy + AnthropicAssertionProxy**
+- `probe.assert_tool_never_called_with(name, **forbidden)` — inverse of `assert_tool_called_with`; asserts the tool was never called with the given key/value combination
+- `probe.assert_response_format(fmt)` — checks final output format: `"json"` validates JSON parse, `"markdown"` checks for headings/lists
+- `probe.assert_prompt_growth_bounded(max_ratio)` — checks every consecutive call pair; fails if any single step grows by more than `max_ratio` (more granular than `assert_context_growth`)
+
+**CLI**
+- `agentprobe show --calls N` — show only first N calls (`N > 0`) or last N calls (`N < 0`); useful for long fixtures
+
+---
+
 ## [0.18.0] — 2026-06-02
 
 ### Added
