@@ -235,6 +235,150 @@ class AssertionProxy:
             )
         return msgs[n]
 
+    # ── Cost / token per-call assertions ─────────────────────────────────
+
+    def assert_cost_per_call(self, usd: float) -> "AssertionProxy":
+        """Assert no individual call exceeded *usd* in estimated cost."""
+        for i, call in enumerate(self._calls):
+            model = call.request.get("model", "")
+            usage = call.response.get("usage") or {}
+            cost = estimate_cost(
+                model,
+                usage.get("prompt_tokens", 0),
+                usage.get("completion_tokens", 0),
+            )
+            assert cost <= usd, (
+                f"agentprobe: call {i + 1} estimated cost ${cost:.6f} exceeds "
+                f"limit ${usd:.6f} (model={model!r})"
+            )
+        return self
+
+    def assert_messages_count(self, n: int) -> "AssertionProxy":
+        """Assert the total number of messages sent across all calls equals *n*.
+
+        Counts the ``messages`` list in each request::
+
+            # A two-turn agent typically sends 1, then 3 messages = 4 total
+            probe.assert_messages_count(4)
+        """
+        total = sum(len(call.request.get("messages", [])) for call in self._calls)
+        assert total == n, (
+            f"agentprobe: expected {n} total messages sent, got {total}"
+        )
+        return self
+
+    def assert_all_models_in(self, *allowed: str) -> "AssertionProxy":
+        """Assert every call used one of *allowed* model names.
+
+        Useful for enforcing model governance in CI::
+
+            probe.assert_all_models_in("gpt-4o", "gpt-4o-mini")
+        """
+        allowed_set = set(allowed)
+        for i, call in enumerate(self._calls):
+            model = call.request.get("model", "")
+            assert model in allowed_set, (
+                f"agentprobe: call {i + 1} used disallowed model '{model}'. "
+                f"Allowed: {sorted(allowed_set)}"
+            )
+        return self
+
+    def assert_no_empty_responses(self) -> "AssertionProxy":
+        """Assert every call returned either text content or tool calls — no blank replies."""
+        for i, call in enumerate(self._calls):
+            choices = call.response.get("choices", [])
+            for choice in choices:
+                msg = choice.get("message", {})
+                has_content = bool(msg.get("content"))
+                has_tools = bool(msg.get("tool_calls"))
+                assert has_content or has_tools, (
+                    f"agentprobe: call {i + 1} returned an empty response "
+                    f"(no content and no tool_calls)"
+                )
+        return self
+
+    # ── Session export / comparison ───────────────────────────────────────
+
+    def export_json(self, indent: int = 2) -> str:
+        """Export the full session as a JSON string — useful for CI artefacts.
+
+        Output structure: ``{"summary": {...}, "calls": [...]}``
+        """
+        return json.dumps({
+            "summary": self.summary_dict(),
+            "calls": self.call_log,
+        }, indent=indent, default=str)
+
+    def matches_fixture(self, path: Union[str, Path], *,
+                        ignore_content: bool = False) -> "AssertionProxy":
+        """Assert this session's tool/model/finish_reason trace matches *path*.
+
+        Useful for regression testing — after refactoring an agent, confirm it
+        makes exactly the same API calls as the golden fixture::
+
+            with session.record("new_run.jsonl") as probe:
+                my_agent(client)
+            probe.matches_fixture("golden.jsonl")
+
+        Set *ignore_content* to skip text output comparison (only checks
+        structure: models, tools called, finish reasons).
+        """
+        golden_calls = _load_calls(Path(path))
+
+        assert len(self._calls) == len(golden_calls), (
+            f"agentprobe: fixture mismatch — session has {len(self._calls)} "
+            f"call(s), golden fixture has {len(golden_calls)}"
+        )
+
+        for i, (actual, golden) in enumerate(zip(self._calls, golden_calls)):
+            a_model = actual.request.get("model")
+            g_model = golden.request.get("model")
+            assert a_model == g_model, (
+                f"agentprobe: call {i + 1} model mismatch: "
+                f"{a_model!r} (actual) != {g_model!r} (golden)"
+            )
+
+            a_choices = actual.response.get("choices", [])
+            g_choices = golden.response.get("choices", [])
+            a_finish = a_choices[-1]["finish_reason"] if a_choices else None
+            g_finish = g_choices[-1]["finish_reason"] if g_choices else None
+            assert a_finish == g_finish, (
+                f"agentprobe: call {i + 1} finish_reason mismatch: "
+                f"{a_finish!r} (actual) != {g_finish!r} (golden)"
+            )
+
+            a_tools = sorted(
+                tc["function"]["name"]
+                for ch in a_choices
+                for tc in (ch["message"].get("tool_calls") or [])
+            )
+            g_tools = sorted(
+                tc["function"]["name"]
+                for ch in g_choices
+                for tc in (ch["message"].get("tool_calls") or [])
+            )
+            assert a_tools == g_tools, (
+                f"agentprobe: call {i + 1} tools mismatch: "
+                f"{a_tools} (actual) != {g_tools} (golden)"
+            )
+
+            if not ignore_content:
+                a_text = next(
+                    (ch["message"].get("content") for ch in reversed(a_choices)
+                     if ch["message"].get("content")), None
+                )
+                g_text = next(
+                    (ch["message"].get("content") for ch in reversed(g_choices)
+                     if ch["message"].get("content")), None
+                )
+                assert a_text == g_text, (
+                    f"agentprobe: call {i + 1} content mismatch:\n"
+                    f"  actual:  {a_text!r}\n"
+                    f"  golden:  {g_text!r}"
+                )
+
+        return self
+
     # ── Output regex assertion ────────────────────────────────────────────
 
     def assert_output_matches(self, pattern: str) -> "AssertionProxy":
@@ -821,6 +965,37 @@ class Session:
             async with self.async_record(path) as proxy:
                 yield proxy
 
+    # ── Append mode ───────────────────────────────────────────────────────
+
+    @contextmanager
+    def record_append(self, path: Union[str, Path]):
+        """Like record() but appends new calls to an existing fixture.
+
+        Useful for building up a fixture incrementally across multiple runs::
+
+            with session.record_append("tests/fixtures/my_agent.jsonl") as probe:
+                my_agent(client, "first query")
+
+            with session.record_append("tests/fixtures/my_agent.jsonl") as probe:
+                my_agent(client, "second query")
+        """
+        path = Path(path)
+        new_calls: List[RecordedCall] = []
+        with recording_context(new_calls):
+            yield AssertionProxy(new_calls)
+        existing = _load_calls(path) if path.exists() else []
+        _save_calls(existing + new_calls, path)
+
+    @asynccontextmanager
+    async def async_record_append(self, path: Union[str, Path]):
+        """Async version of record_append()."""
+        path = Path(path)
+        new_calls: List[RecordedCall] = []
+        async with async_recording_context(new_calls):
+            yield AssertionProxy(new_calls)
+        existing = _load_calls(path) if path.exists() else []
+        _save_calls(existing + new_calls, path)
+
 
 # ── Per-client helpers (shared by MultiSession) ───────────────────────────────
 
@@ -1001,3 +1176,41 @@ class MultiSession:
         else:
             async with self.async_record(client, path) as proxy:
                 yield proxy
+
+    # ── Multi-client chained replay ───────────────────────────────────────
+
+    @contextmanager
+    def replay_chain(self, *client_path_pairs):
+        """Replay multiple chained fixtures for multiple clients simultaneously.
+
+        Each argument is a ``(client, paths)`` pair where *paths* is a single
+        path or list of paths that are concatenated in order for that client::
+
+            with multi.replay_chain(
+                (client_orchestrator, ["warmup.jsonl", "task.jsonl"]),
+                (client_subagent, "sub.jsonl"),
+            ) as probes:
+                run_pipeline(client_orchestrator, client_subagent)
+
+            probes[client_orchestrator].assert_tool_called("search")
+            probes[client_subagent].assert_max_iterations(3)
+        """
+        all_patches = []
+        all_probes: Dict[Any, "AssertionProxy"] = {}
+
+        for client, paths in client_path_pairs:
+            path_list = paths if isinstance(paths, list) else [paths]
+            calls: List[RecordedCall] = []
+            for p in path_list:
+                _check_exists(Path(p))
+                calls.extend(_load_calls(Path(p)))
+            pat = patch.object(client.chat.completions, "create",
+                               _make_sync_replayer(calls, [0]))
+            pat.start()
+            all_patches.append(pat)
+            all_probes[client] = AssertionProxy(calls)
+
+        yield all_probes
+
+        for pat in all_patches:
+            pat.stop()

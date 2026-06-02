@@ -4,6 +4,34 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.8.0] — 2026-06-02
+
+### Added
+
+**AssertionProxy**
+- `probe.assert_cost_per_call(usd)` — assert no individual call exceeded a cost budget
+- `probe.assert_messages_count(n)` — assert total messages sent across all calls equals `n`
+- `probe.assert_all_models_in(*allowed)` — model governance: every call must use an allowed model
+- `probe.assert_no_empty_responses()` — assert every call returned content or tool calls
+- `probe.export_json(indent=2)` — export full session as a JSON string (`{"summary": ..., "calls": [...]}`) for CI artefacts
+- `probe.matches_fixture(path, *, ignore_content=False)` — structural regression comparison against a golden fixture (model, finish_reason, tools, content)
+
+**Session**
+- `Session.record_append(path)` / `Session.async_record_append(path)` — append new calls to an existing fixture without overwriting; creates the file if it doesn't exist
+
+**MultiSession**
+- `MultiSession.replay_chain(*client_path_pairs)` — replay multiple chained fixtures for multiple clients simultaneously; each pair is `(client, path_or_list_of_paths)`
+
+**CLI**
+- `agentprobe validate --strict` — treat lint warnings as errors (exit 1 if any warnings present)
+- `agentprobe diff --by-call` — human-readable side-by-side per-call comparison
+- `agentprobe fixtures --clean` — remove stale `.lock` files left by interrupted recordings
+- `agentprobe fixtures --by-date` / `agentprobe stats --by-date` — group fixture stats by recording date from `_meta` header; `--json` for machine-readable output
+- `agentprobe record --dry-run` — run the script and show what would be captured without saving
+- `agentprobe record --append` — append captured calls to an existing fixture instead of overwriting
+
+---
+
 ## [0.6.0] — 2026-06-02
 
 ### Added

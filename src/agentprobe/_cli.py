@@ -503,9 +503,134 @@ def cmd_validate(args):
     for w in warnings:
         print(f"  WARN: {w}")
 
+    if warnings and getattr(args, "strict", False):
+        print(f"\nagentprobe: {len(warnings)} warning(s) treated as errors (--strict)", file=sys.stderr)
+        sys.exit(1)
+
     streaming = sum(1 for d in [json.loads(l) for l in lines] if d.get("chunks"))
     status = f"OK ({len(warnings)} warning(s))" if warnings else "OK"
     print(f"agentprobe: {args.fixture} {status}  ({len(lines)} call(s), {streaming} streaming)")
+
+
+def cmd_diff_by_call(args):
+    """Human-readable side-by-side per-call comparison of two fixtures."""
+    a_calls = _load(args.fixture_a)
+    b_calls = _load(args.fixture_b)
+    max_len = max(len(a_calls), len(b_calls), 1)
+
+    print(f"agentprobe diff: {args.fixture_a}  vs  {args.fixture_b}\n")
+
+    diffs = 0
+    for i in range(max_len):
+        a = a_calls[i] if i < len(a_calls) else None
+        b = b_calls[i] if i < len(b_calls) else None
+
+        label_a = f"A call {i+1}"
+        label_b = f"B call {i+1}"
+        print(f"{'=' * 60}")
+        print(f"  {label_a:<28}  {label_b}")
+        print(f"{'=' * 60}")
+
+        if a is None:
+            print(f"  (absent)                          {_call_summary(b)}")
+            diffs += 1
+            print()
+            continue
+        if b is None:
+            print(f"  {_call_summary(a):<34}(absent)")
+            diffs += 1
+            print()
+            continue
+
+        fields = [
+            ("model",         _call_model(a),       _call_model(b)),
+            ("finish_reason", _call_finish(a),       _call_finish(b)),
+            ("prompt_tokens", _call_prompt_tok(a),   _call_prompt_tok(b)),
+            ("tools",         _call_tools_str(a),    _call_tools_str(b)),
+            ("content",       _call_content_snip(a), _call_content_snip(b)),
+        ]
+        for name, va, vb in fields:
+            marker = "!!" if va != vb else "  "
+            if va != vb:
+                diffs += 1
+            print(f"  {marker} {name:<16} {str(va):<30}  {vb}")
+        print()
+
+    if diffs == 0:
+        print("No differences found.")
+    else:
+        print(f"\n{diffs} difference(s) found.")
+        sys.exit(1)
+
+
+def _call_summary(c): return f"model={c.get('request',{}).get('model','?')} stop={_call_finish(c)}"
+def _call_model(c): return c.get("request", {}).get("model", "?")
+def _call_finish(c):
+    ch = c.get("response", {}).get("choices", [])
+    return ch[0]["finish_reason"] if ch else "?"
+def _call_prompt_tok(c): return (c.get("response", {}).get("usage") or {}).get("prompt_tokens", "?")
+def _call_tools_str(c):
+    ch = c.get("response", {}).get("choices", [])
+    names = [tc["function"]["name"] for ch_ in ch for tc in (ch_["message"].get("tool_calls") or [])]
+    return ",".join(names) if names else "(none)"
+def _call_content_snip(c):
+    ch = c.get("response", {}).get("choices", [])
+    text = next((ch_["message"].get("content") for ch_ in reversed(ch) if ch_["message"].get("content")), None)
+    if text is None:
+        return "(none)"
+    return text[:40] + "..." if len(text) > 40 else text
+
+
+def cmd_fixtures_clean(args):
+    """Remove stale .lock files left by interrupted recordings."""
+    directory = Path(args.directory)
+    if not directory.is_dir():
+        print(f"agentprobe: not a directory: {args.directory}", file=sys.stderr)
+        sys.exit(1)
+    locks = list(directory.rglob("*.lock"))
+    if not locks:
+        print(f"agentprobe: no .lock files found in {args.directory}")
+        return
+    for lock in locks:
+        lock.unlink()
+        print(f"  removed {lock}")
+    print(f"\nagentprobe: removed {len(locks)} lock file(s)")
+
+
+def cmd_stats_by_date(args):
+    """Aggregate stats grouped by the recording date from _meta headers."""
+    directory = Path(args.directory)
+    if not directory.is_dir():
+        print(f"agentprobe: not a directory: {args.directory}", file=sys.stderr)
+        sys.exit(1)
+
+    from agentprobe._pricing import estimate_cost
+    by_date: dict = {}
+    for f in sorted(directory.rglob("*.jsonl")) + sorted(directory.rglob("*.jsonl.gz")):
+        meta = _load_meta(str(f))
+        date = meta.get("recorded_at", "")[:10] if meta else "unknown"
+        try:
+            calls = _load(str(f))
+        except Exception:
+            continue
+        entry = by_date.setdefault(date, {"fixtures": 0, "calls": 0, "tokens": 0, "cost": 0.0})
+        entry["fixtures"] += 1
+        for c in calls:
+            usage = c.get("response", {}).get("usage") or {}
+            p = usage.get("prompt_tokens", 0) or 0
+            co = usage.get("completion_tokens", 0) or 0
+            entry["calls"] += 1
+            entry["tokens"] += p + co
+            entry["cost"] += estimate_cost(c.get("request", {}).get("model", ""), p, co)
+
+    if getattr(args, "json", False):
+        print(json.dumps(by_date, indent=2))
+    else:
+        print(f"Fixtures by recording date ({args.directory}):\n")
+        for date in sorted(by_date):
+            e = by_date[date]
+            print(f"  {date}  {e['fixtures']} fixture(s)  {e['calls']} call(s)  "
+                  f"{e['tokens']:,} tokens  ${e['cost']:.4f}")
 
 
 def cmd_init(args):
@@ -638,10 +763,26 @@ def cmd_record(args):
                 except SystemExit:
                     pass
 
-    _save_calls(calls, output)
+    dry_run = getattr(args, "dry_run", False)
+    append = getattr(args, "append", False)
     async_note = " (async script)" if is_async else ""
     gz_note = " [gzip]" if output.suffix == ".gz" else ""
-    print(f"agentprobe: recorded {len(calls)} call(s) to {output}{async_note}{gz_note}")
+
+    if dry_run:
+        print(f"agentprobe: dry-run — would record {len(calls)} call(s) to {output}{async_note}")
+        for i, c in enumerate(calls, 1):
+            model = c.request.get("model", "?")
+            tokens = (c.response.get("usage") or {}).get("prompt_tokens", "?")
+            print(f"  call {i}: model={model} prompt_tokens={tokens}")
+    elif append:
+        from agentprobe._session import _load_calls as _lc
+        existing = _lc(output) if output.exists() else []
+        _save_calls(existing + calls, output)
+        print(f"agentprobe: appended {len(calls)} call(s) to {output} "
+              f"(total: {len(existing) + len(calls)}){async_note}{gz_note}")
+    else:
+        _save_calls(calls, output)
+        print(f"agentprobe: recorded {len(calls)} call(s) to {output}{async_note}{gz_note}")
 
 
 def cmd_record_watch(args):
@@ -687,19 +828,25 @@ def main():
     p_diff.add_argument("fixture_a")
     p_diff.add_argument("fixture_b")
     p_diff.add_argument("--json", action="store_true", help="Output as machine-readable JSON")
-    p_diff.set_defaults(func=lambda a: cmd_diff_json(a) if a.json else cmd_diff(a))
+    p_diff.add_argument("--by-call", action="store_true",
+                        help="Human-readable side-by-side per-call comparison")
+    p_diff.set_defaults(func=lambda a: cmd_diff_by_call(a) if a.by_call else (cmd_diff_json(a) if a.json else cmd_diff(a)))
 
-    p_list = sub.add_parser("fixtures", help="List fixture files in a directory")
+    p_list = sub.add_parser("fixtures", help="List or manage fixture files in a directory")
     p_list.add_argument("directory", nargs="?", default="tests/fixtures",
                         help="Directory to search (default: tests/fixtures)")
     p_list.add_argument("--json", action="store_true", help="Output as machine-readable JSON")
-    p_list.set_defaults(func=cmd_fixtures_list)
+    p_list.add_argument("--clean", action="store_true", help="Remove stale .lock files")
+    p_list.add_argument("--by-date", action="store_true", help="Group stats by recording date")
+    p_list.set_defaults(func=lambda a: cmd_fixtures_clean(a) if a.clean else (
+        cmd_stats_by_date(a) if a.by_date else cmd_fixtures_list(a)))
 
     p_stats = sub.add_parser("stats", help="Aggregate stats across all fixtures in a directory")
     p_stats.add_argument("directory", nargs="?", default="tests/fixtures",
                          help="Directory to scan (default: tests/fixtures)")
     p_stats.add_argument("--json", action="store_true", help="Output as machine-readable JSON")
-    p_stats.set_defaults(func=cmd_fixtures_stats)
+    p_stats.add_argument("--by-date", action="store_true", help="Group stats by recording date")
+    p_stats.set_defaults(func=lambda a: cmd_stats_by_date(a) if a.by_date else cmd_fixtures_stats(a))
 
     p_migrate = sub.add_parser("migrate", help="Transform a fixture: rename models/tools")
     p_migrate.add_argument("input", help="Input .jsonl fixture")
@@ -733,10 +880,16 @@ def main():
                           help="Polling interval in seconds for --watch (default: 1.0)")
     p_record.add_argument("--timeout", type=float, metavar="SECONDS",
                           help="Kill the script after SECONDS (saves calls recorded so far)")
+    p_record.add_argument("--dry-run", action="store_true",
+                          help="Run script and show what would be captured, but don't save")
+    p_record.add_argument("--append", action="store_true",
+                          help="Append captured calls to an existing fixture (don't overwrite)")
     p_record.set_defaults(func=lambda a: cmd_record_watch(a) if a.watch else cmd_record(a))
 
     p_validate = sub.add_parser("validate", help="Validate a fixture file for correctness")
     p_validate.add_argument("fixture", help="Path to .jsonl fixture file")
+    p_validate.add_argument("--strict", action="store_true",
+                            help="Treat lint warnings as errors (exit 1 if any)")
     p_validate.set_defaults(func=cmd_validate)
 
     p_init = sub.add_parser("init", help="Scaffold tests/fixtures/ and a sample conftest.py")
