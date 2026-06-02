@@ -4,6 +4,36 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.4.0] — 2026-06-02
+
+### Added
+
+**AssertionProxy**
+- `probe.call(n)` — scoped proxy for the nth call (0-indexed); enables per-iteration assertions
+- `probe.first_tool_called` / `probe.last_tool_called` — convenience properties
+- `probe.assert_output_is_json()` — assert final output parses as valid JSON
+- `probe.assert_output_json_contains(**kv)` — assert key/value pairs inside JSON output
+
+**Session**
+- `Session.record / replay` now support `.jsonl.gz` compressed fixtures transparently
+- `_save_calls` acquires a `FileLock` (when `filelock` is installed) to prevent concurrent
+  pytest-xdist workers from corrupting the same fixture during parallel recording
+
+**CLI**
+- `agentprobe validate` now performs full `ChatCompletion.model_validate` + per-chunk
+  `ChatCompletionChunk.model_validate` — catches malformed fixtures before a test run fails
+- `agentprobe diff --json` now includes `tool_arguments` and `content` diffs
+- `agentprobe record` detects async scripts (`asyncio.run()` / `async def main`) and
+  notes them in the output; both sync and async scripts work correctly
+
+**Infrastructure**
+- Pricing table expanded: versioned model IDs (`gpt-4o-2024-11-20`, `o1-2024-12-17` etc),
+  `gpt-4-32k`, `gpt-3.5-turbo-0125` — prefix matching resolves versioned suffixes
+- `pip install pytest-agentprobe[xdist]` installs `filelock` for parallel-test safety
+- `.github/workflows/publish.yml` — OIDC trusted publishing on `git tag v*`
+
+---
+
 ## [0.3.0] — 2026-06-02
 
 ### Added
