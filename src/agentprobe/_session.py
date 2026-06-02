@@ -302,6 +302,61 @@ class AssertionProxy:
         """Ordered list of model names used across all calls."""
         return [call.request.get("model", "") for call in self._calls]
 
+    @property
+    def messages_received(self) -> List[Dict[str, Any]]:
+        """Assistant messages received across all calls.
+
+        Each entry has ``call_index``, ``content``, ``tool_calls``,
+        and ``finish_reason``::
+
+            for msg in probe.messages_received:
+                print(msg["call_index"], msg["content"])
+        """
+        received = []
+        for i, call in enumerate(self._calls):
+            for choice in call.response.get("choices", []):
+                msg = choice.get("message", {})
+                received.append({
+                    "call_index": i,
+                    "content": msg.get("content"),
+                    "tool_calls": msg.get("tool_calls"),
+                    "finish_reason": choice.get("finish_reason"),
+                })
+        return received
+
+    @property
+    def tool_call_inputs(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Dict mapping each tool name to the list of argument dicts it was called with.
+
+        Useful for bulk inspection without looping::
+
+            inputs = probe.tool_call_inputs
+            assert inputs["bash"][0]["command"] == "ls /tmp"
+        """
+        result: Dict[str, List[Dict[str, Any]]] = {}
+        for call in self._calls:
+            for choice in call.response.get("choices", []):
+                for tc in (choice.get("message", {}).get("tool_calls") or []):
+                    name = tc["function"]["name"]
+                    args = json.loads(tc["function"]["arguments"])
+                    result.setdefault(name, []).append(args)
+        return result
+
+    def summary_dict(self) -> Dict[str, Any]:
+        """Return a plain dict summarising the session — useful for logging/reporting."""
+        return {
+            "iteration_count": self.iteration_count,
+            "tools_called": self.tools_called,
+            "first_tool_called": self.first_tool_called,
+            "final_output": self.final_output,
+            "total_tokens": self.total_tokens,
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "estimated_cost_usd": self.estimated_cost_usd,
+            "total_duration_ms": self.total_duration_ms,
+            "models_used": self.models_used,
+        }
+
     def duration_percentile(self, p: float) -> float:
         """Return the *p*-th percentile of per-call duration_ms (0–100).
 
@@ -383,6 +438,24 @@ class AssertionProxy:
                 (usage or {}).get("completion_tokens", 0),
             )
         return round(total, 8)
+
+    def assert_token_efficiency(self, min_ratio: float) -> "AssertionProxy":
+        """Assert output_tokens / input_tokens >= *min_ratio*.
+
+        Useful for catching runaway verbosity or near-empty responses::
+
+            probe.assert_token_efficiency(0.1)  # at least 10% output vs input
+        """
+        inp = self.total_input_tokens
+        out = self.total_output_tokens
+        if inp == 0:
+            return self
+        ratio = out / inp
+        assert ratio >= min_ratio, (
+            f"agentprobe: token efficiency {ratio:.4f} < {min_ratio} "
+            f"({out} output / {inp} input tokens)"
+        )
+        return self
 
     # ── Per-call access ───────────────────────────────────────────────────
 
@@ -573,6 +646,26 @@ class Session:
         else:
             with replaying_context(calls):
                 yield AssertionProxy(calls)
+
+    @contextmanager
+    def replay_chain(self, *paths: Union[str, Path]):
+        """Replay multiple fixtures end-to-end as a single session.
+
+        Calls from each fixture are served in order — when the first is
+        exhausted the next is used transparently::
+
+            with session.replay_chain("warm_up.jsonl", "task.jsonl") as probe:
+                agent(client)  # consumes calls from both fixtures in sequence
+        """
+        all_calls: List[RecordedCall] = []
+        for p in paths:
+            p = Path(p)
+            _check_exists(p)
+            if not p.exists():
+                p = p.with_suffix(p.suffix + ".gz")
+            all_calls.extend(_load_calls(p))
+        with replaying_context(all_calls):
+            yield AssertionProxy(all_calls)
 
     @contextmanager
     def auto(self, path: Union[str, Path]):

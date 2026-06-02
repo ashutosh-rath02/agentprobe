@@ -27,8 +27,14 @@ def _fmt_choice(choice: dict) -> list[str]:
     return lines
 
 
+def _filter_calls(calls: list, model_filter: str | None) -> list:
+    if not model_filter:
+        return calls
+    return [c for c in calls if c.get("request", {}).get("model") == model_filter]
+
+
 def cmd_show(args):
-    calls = _load(args.fixture)
+    calls = _filter_calls(_load(args.fixture), getattr(args, "model", None))
     print(f"fixture: {args.fixture}  ({len(calls)} call(s))\n")
     for i, call in enumerate(calls, 1):
         req = call.get("request", {})
@@ -54,8 +60,8 @@ def cmd_show(args):
 
 
 def cmd_show_json(args):
-    calls = _load(args.fixture)
     from agentprobe._pricing import estimate_cost
+    calls = _filter_calls(_load(args.fixture), getattr(args, "model", None))
     out = []
     total_prompt = 0
     total_completion = 0
@@ -270,6 +276,147 @@ def cmd_fixtures_list(args):
         print(f"\n{len(fixtures)} fixture(s) found")
 
 
+def cmd_fixtures_stats(args):
+    """Aggregate token/cost/duration stats across all fixtures in a directory."""
+    from agentprobe._pricing import estimate_cost
+    directory = Path(args.directory)
+    if not directory.is_dir():
+        print(f"agentprobe: not a directory: {args.directory}", file=sys.stderr)
+        sys.exit(1)
+
+    fixtures = sorted(directory.rglob("*.jsonl")) + sorted(directory.rglob("*.jsonl.gz"))
+    if not fixtures:
+        print(f"agentprobe: no fixtures found in {args.directory}")
+        return
+
+    total_calls = 0
+    total_prompt = 0
+    total_completion = 0
+    total_duration = 0.0
+    total_cost = 0.0
+    total_streaming = 0
+    by_model: dict = {}
+    errors = 0
+
+    for f in fixtures:
+        try:
+            calls = _load(str(f))
+        except Exception:
+            errors += 1
+            continue
+        for c in calls:
+            total_calls += 1
+            usage = c.get("response", {}).get("usage") or {}
+            p_tok = usage.get("prompt_tokens", 0) or 0
+            c_tok = usage.get("completion_tokens", 0) or 0
+            dur = c.get("duration_ms") or 0.0
+            model = c.get("request", {}).get("model") or "unknown"
+            cost = estimate_cost(model, p_tok, c_tok)
+            total_prompt += p_tok
+            total_completion += c_tok
+            total_duration += dur
+            total_cost += cost
+            if c.get("chunks"):
+                total_streaming += 1
+            entry = by_model.setdefault(model, {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0})
+            entry["calls"] += 1
+            entry["prompt_tokens"] += p_tok
+            entry["completion_tokens"] += c_tok
+            entry["cost"] += cost
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "fixtures": len(fixtures),
+            "error_fixtures": errors,
+            "total_calls": total_calls,
+            "streaming_calls": total_streaming,
+            "total_prompt_tokens": total_prompt,
+            "total_completion_tokens": total_completion,
+            "total_tokens": total_prompt + total_completion,
+            "total_duration_ms": total_duration,
+            "estimated_total_cost_usd": round(total_cost, 6),
+            "by_model": by_model,
+        }, indent=2))
+    else:
+        print(f"Stats for {args.directory}  ({len(fixtures)} fixture(s), {total_calls} call(s))\n")
+        print(f"  Tokens:    {total_prompt + total_completion:,}  ({total_prompt:,} in + {total_completion:,} out)")
+        print(f"  Duration:  {total_duration/1000:.1f}s total")
+        print(f"  Cost est.: ${total_cost:.4f}")
+        print(f"  Streaming: {total_streaming} call(s)")
+        if errors:
+            print(f"  Errors:    {errors} fixture(s) could not be read")
+        if by_model:
+            print("\n  By model:")
+            for model, info in sorted(by_model.items()):
+                print(f"    {model}: {info['calls']} call(s), ${info['cost']:.4f}")
+
+
+def cmd_migrate(args):
+    """Transform a fixture file: rename models, rename tools, or set model."""
+    p = Path(args.input)
+    if not p.exists():
+        print(f"agentprobe: file not found: {args.input}", file=sys.stderr)
+        sys.exit(1)
+
+    rename_models = {}
+    for s in getattr(args, "rename_model", []) or []:
+        if "=" not in s:
+            print(f"agentprobe: --rename-model requires old=new format, got: {s!r}", file=sys.stderr)
+            sys.exit(1)
+        old, new = s.split("=", 1)
+        rename_models[old.strip()] = new.strip()
+
+    rename_tools = {}
+    for s in getattr(args, "rename_tool", []) or []:
+        if "=" not in s:
+            print(f"agentprobe: --rename-tool requires old=new format, got: {s!r}", file=sys.stderr)
+            sys.exit(1)
+        old, new = s.split("=", 1)
+        rename_tools[old.strip()] = new.strip()
+
+    set_model = getattr(args, "set_model", None)
+    lines = [l for l in p.read_text().splitlines() if l.strip()]
+    transformed = 0
+
+    out_lines = []
+    for line in lines:
+        data = json.loads(line)
+        req = data.get("request", {})
+        resp = data.get("response", {})
+
+        # Rename/set model in request
+        if set_model:
+            req["model"] = set_model
+            resp["model"] = set_model
+        elif req.get("model") in rename_models:
+            new = rename_models[req["model"]]
+            req["model"] = new
+            resp["model"] = new
+
+        # Rename tools in response choices
+        for choice in resp.get("choices", []):
+            for tc in (choice.get("message", {}).get("tool_calls") or []):
+                old = tc.get("function", {}).get("name", "")
+                if old in rename_tools:
+                    tc["function"]["name"] = rename_tools[old]
+                    transformed += 1
+
+        # Rename tools in request tools list
+        for tool in req.get("tools", []):
+            old = tool.get("function", {}).get("name", "")
+            if old in rename_tools:
+                tool["function"]["name"] = rename_tools[old]
+
+        data["request"] = req
+        data["response"] = resp
+        out_lines.append(json.dumps(data))
+
+    out_path = Path(args.output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(out_lines) + "\n")
+    print(f"agentprobe: migrated {len(lines)} call(s) to {out_path}  ({transformed} tool rename(s))")
+
+
 def cmd_validate(args):
     """Validate fixture structure and attempt full Pydantic deserialization."""
     import openai.types.chat as oai
@@ -401,7 +548,11 @@ def cmd_record(args):
             key, _, value = line.partition("=")
             os.environ.setdefault(key.strip(), value.strip())
 
-    output = Path(args.output)
+    output_str = args.output
+    fmt = getattr(args, "output_format", None)
+    if fmt == "gz" and not output_str.endswith(".gz"):
+        output_str = output_str + ".gz"
+    output = Path(output_str)
     calls: list = []
 
     # Patch sync completions via recording_context and async completions manually.
@@ -445,7 +596,34 @@ def cmd_record(args):
 
     _save_calls(calls, output)
     async_note = " (async script)" if is_async else ""
-    print(f"agentprobe: recorded {len(calls)} call(s) to {output}{async_note}")
+    gz_note = " [gzip]" if output.suffix == ".gz" else ""
+    print(f"agentprobe: recorded {len(calls)} call(s) to {output}{async_note}{gz_note}")
+
+
+def cmd_record_watch(args):
+    """Watch a script for changes and re-record automatically."""
+    import time
+    interval = getattr(args, "interval", 1.0)
+    last_mtime = None
+    print(f"agentprobe: watching {args.script} (interval {interval}s, Ctrl+C to stop)...")
+    try:
+        while True:
+            try:
+                mtime = Path(args.script).stat().st_mtime
+            except FileNotFoundError:
+                time.sleep(interval)
+                continue
+            if mtime != last_mtime:
+                if last_mtime is not None:
+                    print(f"\nagentprobe: change detected — re-recording...")
+                last_mtime = mtime
+                try:
+                    cmd_record(args)
+                except Exception as e:
+                    print(f"agentprobe: record failed: {e}", file=sys.stderr)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\nagentprobe: watch stopped.")
 
 
 def main():
@@ -458,6 +636,7 @@ def main():
     p_show = sub.add_parser("show", help="Pretty-print a session fixture")
     p_show.add_argument("fixture", help="Path to .jsonl fixture file")
     p_show.add_argument("--json", action="store_true", help="Output as machine-readable JSON")
+    p_show.add_argument("--model", metavar="MODEL", help="Filter to calls using this model")
     p_show.set_defaults(func=lambda a: cmd_show_json(a) if a.json else cmd_show(a))
 
     p_diff = sub.add_parser("diff", help="Compare two session fixtures")
@@ -472,6 +651,23 @@ def main():
     p_list.add_argument("--json", action="store_true", help="Output as machine-readable JSON")
     p_list.set_defaults(func=cmd_fixtures_list)
 
+    p_stats = sub.add_parser("stats", help="Aggregate stats across all fixtures in a directory")
+    p_stats.add_argument("directory", nargs="?", default="tests/fixtures",
+                         help="Directory to scan (default: tests/fixtures)")
+    p_stats.add_argument("--json", action="store_true", help="Output as machine-readable JSON")
+    p_stats.set_defaults(func=cmd_fixtures_stats)
+
+    p_migrate = sub.add_parser("migrate", help="Transform a fixture: rename models/tools")
+    p_migrate.add_argument("input", help="Input .jsonl fixture")
+    p_migrate.add_argument("output", help="Output .jsonl fixture")
+    p_migrate.add_argument("--rename-model", dest="rename_model", action="append",
+                           metavar="OLD=NEW", help="Rename a model (repeatable)")
+    p_migrate.add_argument("--rename-tool", dest="rename_tool", action="append",
+                           metavar="OLD=NEW", help="Rename a tool (repeatable)")
+    p_migrate.add_argument("--set-model", dest="set_model", metavar="MODEL",
+                           help="Force all calls to use this model")
+    p_migrate.set_defaults(func=cmd_migrate)
+
     p_record = sub.add_parser(
         "record",
         help="Run a Python script and capture all OpenAI calls to a fixture",
@@ -483,12 +679,15 @@ def main():
         default="agentprobe_session.jsonl",
         help="Output JSONL path (default: agentprobe_session.jsonl)",
     )
-    p_record.add_argument(
-        "--env",
-        metavar="FILE",
-        help="Load environment variables from FILE before running the script",
-    )
-    p_record.set_defaults(func=cmd_record)
+    p_record.add_argument("--env", metavar="FILE",
+                          help="Load environment variables from FILE before running the script")
+    p_record.add_argument("--output-format", choices=["jsonl", "gz"],
+                          help="Force output format (gz adds .gz suffix if missing)")
+    p_record.add_argument("--watch", action="store_true",
+                          help="Watch script for changes and re-record automatically")
+    p_record.add_argument("--interval", type=float, default=1.0,
+                          help="Polling interval in seconds for --watch (default: 1.0)")
+    p_record.set_defaults(func=lambda a: cmd_record_watch(a) if a.watch else cmd_record(a))
 
     p_validate = sub.add_parser("validate", help="Validate a fixture file for correctness")
     p_validate.add_argument("fixture", help="Path to .jsonl fixture file")

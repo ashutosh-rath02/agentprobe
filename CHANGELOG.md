@@ -4,6 +4,28 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.6.0] — 2026-06-02
+
+### Added
+
+**AssertionProxy**
+- `probe.messages_received` — list of assistant messages received, each with `call_index`, `content`, `tool_calls`, `finish_reason`
+- `probe.tool_call_inputs` — `{tool_name: [args_dict, ...]}` for all tool calls; quick bulk inspection without looping
+- `probe.summary_dict()` — exportable dict summary of the session (iteration count, tokens, cost, tools, model list)
+- `probe.assert_token_efficiency(min_ratio)` — assert `output_tokens / input_tokens >= min_ratio`
+
+**Session**
+- `Session.replay_chain(*paths)` — concatenate multiple fixtures end-to-end into a single session; calls exhausted in order
+
+**CLI**
+- `agentprobe migrate <input> <output>` — transform fixtures: `--rename-model OLD=NEW`, `--rename-tool OLD=NEW`, `--set-model MODEL`
+- `agentprobe stats [dir]` — aggregate token/cost/duration stats across all fixtures; `--json` for machine-readable output
+- `agentprobe show --model MODEL` — filter show/show --json output to calls matching a specific model
+- `agentprobe record --output-format gz` — force gzip output regardless of filename extension
+- `agentprobe record --watch [--interval N]` — poll script for changes and re-record automatically (Ctrl+C to stop)
+
+---
+
 ## [0.5.0] — 2026-06-02
 
 ### Added
