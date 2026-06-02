@@ -4,6 +4,21 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.16.0] — 2026-06-02
+
+### Added
+
+**AssertionProxy + AnthropicAssertionProxy**
+- `probe.assert_final_tool_not_called(name)` — fails if the last API call invoked *name*; guards against agents that end on a tool call instead of a text response
+- `probe.assert_output_word_count(min_words=0, max_words=None)` — asserts the final output word count is in range; catches over-verbose and too-terse responses
+- `probe.assert_no_pii_in_tool_inputs(*patterns)` — regex-based PII guard on all tool call inputs; raises if any pattern matches
+
+**CLI**
+- `agentprobe record --label TAG` — embeds a custom label string into `_meta.label`; useful for grouping fixtures by CI run, environment, or feature branch
+- `agentprobe show --stdout` — prints captured stdout/stderr from `_meta` below the call listing (from fixtures recorded with `record --capture-stdout`)
+
+---
+
 ## [0.15.0] — 2026-06-02
 
 ### Added

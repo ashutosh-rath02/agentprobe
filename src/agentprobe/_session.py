@@ -379,6 +379,72 @@ class AssertionProxy:
 
         return self
 
+    def assert_final_tool_not_called(self, tool_name: str) -> "AssertionProxy":
+        """Assert the last API call did not invoke *tool_name*.
+
+        Guards against agents that finish on a tool call instead of a final
+        text response::
+
+            probe.assert_final_tool_not_called("search")
+        """
+        if not self._calls:
+            return self
+        last = self._calls[-1]
+        names = [
+            tc["function"]["name"]
+            for choice in last.response.get("choices", [])
+            for tc in (choice.get("message", {}).get("tool_calls") or [])
+        ]
+        assert tool_name not in names, (
+            f"agentprobe: final call invoked '{tool_name}' — agent did not finish cleanly"
+        )
+        return self
+
+    def assert_output_word_count(self, min_words: int = 0,
+                                 max_words: Optional[int] = None) -> "AssertionProxy":
+        """Assert the final output word count is within [*min_words*, *max_words*].
+
+        Useful for catching over-verbose or too-terse responses::
+
+            probe.assert_output_word_count(5, 500)
+        """
+        text = self.final_output or ""
+        words = len(text.split()) if text.strip() else 0
+        assert words >= min_words, (
+            f"agentprobe: output has {words} word(s), expected at least {min_words}"
+        )
+        if max_words is not None:
+            assert words <= max_words, (
+                f"agentprobe: output has {words} word(s), expected at most {max_words}"
+            )
+        return self
+
+    def assert_no_pii_in_tool_inputs(self, *patterns: str) -> "AssertionProxy":
+        """Assert none of the tool input arguments match any of *patterns* (regex).
+
+        Guards against agents accidentally forwarding PII (emails, phone numbers,
+        API keys) into tool calls::
+
+            probe.assert_no_pii_in_tool_inputs(
+                r"[\\w.+-]+@[\\w-]+\\.[\\w.]+",  # email
+                r"\\b\\d{3}-\\d{2}-\\d{4}\\b",   # SSN
+            )
+        """
+        import re
+        for i, call in enumerate(self._calls):
+            for choice in call.response.get("choices", []):
+                for tc in (choice.get("message", {}).get("tool_calls") or []):
+                    name = tc["function"]["name"]
+                    args_str = tc["function"].get("arguments", "")
+                    for pat in patterns:
+                        m = re.search(pat, args_str)
+                        if m:
+                            raise AssertionError(
+                                f"agentprobe: call {i + 1} tool '{name}' input matched "
+                                f"PII pattern {pat!r}: {m.group()!r}"
+                            )
+        return self
+
     def assert_tool_call_count_per_call(self, tool_name: str, n: int) -> "AssertionProxy":
         """Assert every iteration that called *tool_name* called it exactly *n* times.
 
@@ -1041,7 +1107,8 @@ def _load_calls(path: Path) -> List[RecordedCall]:
         ]
 
 
-def _build_meta_line(extra: Optional[Dict[str, Any]] = None) -> str:
+def _build_meta_line(extra: Optional[Dict[str, Any]] = None,
+                     label: Optional[str] = None) -> str:
     """Return a JSON _meta header line with version + timestamp."""
     from agentprobe import __version__
     meta: Dict[str, Any] = {
@@ -1049,15 +1116,18 @@ def _build_meta_line(extra: Optional[Dict[str, Any]] = None) -> str:
         "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "python_version": __import__("sys").version.split()[0],
     }
+    if label:
+        meta["label"] = label
     if extra:
         meta.update(extra)
     return json.dumps({"_meta": meta})
 
 
 def _save_calls(calls: List[RecordedCall], path: Path,
-                meta_extra: Optional[Dict[str, Any]] = None) -> None:
+                meta_extra: Optional[Dict[str, Any]] = None,
+                label: Optional[str] = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [_build_meta_line(meta_extra)]
+    lines = [_build_meta_line(meta_extra, label)]
     for call in calls:
         data: dict = {
             "request": call.request,
@@ -1731,6 +1801,49 @@ class AnthropicAssertionProxy:
                 f"agentprobe: call {i + 1} returned an empty response "
                 f"(no text blocks and no tool_use blocks)"
             )
+        return self
+
+    def assert_final_tool_not_called(self, tool_name: str) -> "AnthropicAssertionProxy":
+        """Assert the last API call did not invoke *tool_name*."""
+        if not self._calls:
+            return self
+        last_blocks = self._calls[-1].response.get("content") or []
+        names = [b["name"] for b in last_blocks if b.get("type") == "tool_use"]
+        assert tool_name not in names, (
+            f"agentprobe: final call invoked '{tool_name}' — agent did not finish cleanly"
+        )
+        return self
+
+    def assert_output_word_count(self, min_words: int = 0,
+                                 max_words: Optional[int] = None) -> "AnthropicAssertionProxy":
+        """Assert the final output word count is within [*min_words*, *max_words*]."""
+        text = self.final_output or ""
+        words = len(text.split()) if text.strip() else 0
+        assert words >= min_words, (
+            f"agentprobe: output has {words} word(s), expected at least {min_words}"
+        )
+        if max_words is not None:
+            assert words <= max_words, (
+                f"agentprobe: output has {words} word(s), expected at most {max_words}"
+            )
+        return self
+
+    def assert_no_pii_in_tool_inputs(self, *patterns: str) -> "AnthropicAssertionProxy":
+        """Assert no tool input arguments match any of *patterns* (regex)."""
+        import re
+        for i, call in enumerate(self._calls):
+            for block in (call.response.get("content") or []):
+                if block.get("type") != "tool_use":
+                    continue
+                name = block["name"]
+                inp_str = json.dumps(block.get("input", {}))
+                for pat in patterns:
+                    m = re.search(pat, inp_str)
+                    if m:
+                        raise AssertionError(
+                            f"agentprobe: call {i + 1} tool '{name}' input matched "
+                            f"PII pattern {pat!r}: {m.group()!r}"
+                        )
         return self
 
     def assert_tool_call_count_per_call(self, tool_name: str, n: int) -> "AnthropicAssertionProxy":

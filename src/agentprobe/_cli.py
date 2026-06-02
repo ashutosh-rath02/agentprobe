@@ -113,6 +113,20 @@ def cmd_show(args):
 
     print(f"total tokens: {total_in + total_out}  ({total_in} in + {total_out} out)")
 
+    if getattr(args, "stdout", False):
+        meta = _load_meta(args.fixture)
+        captured = meta.get("stdout", "")
+        err_captured = meta.get("stderr", "")
+        if captured or err_captured:
+            print(f"\n--- captured stdout ---")
+            if captured:
+                print(captured.rstrip())
+            if err_captured:
+                print(f"\n--- captured stderr ---")
+                print(err_captured.rstrip())
+        else:
+            print("\n(no captured stdout in _meta — record with --capture-stdout)")
+
 
 def cmd_show_json(args):
     from agentprobe._pricing import estimate_cost, estimate_cost_anthropic
@@ -1245,6 +1259,7 @@ def cmd_record(args):
     async_note = " (async script)" if is_async else ""
     gz_note = " [gzip]" if output.suffix == ".gz" else ""
 
+    label = getattr(args, "label", None)
     meta_extra = None
     if capture_stdout and (stdout_buf.getvalue() or stderr_buf.getvalue()):
         meta_extra = {}
@@ -1265,13 +1280,14 @@ def cmd_record(args):
     elif append:
         from agentprobe._session import _load_calls as _lc
         existing = _lc(output) if output.exists() else []
-        _save_calls(existing + calls, output, meta_extra)
+        _save_calls(existing + calls, output, meta_extra, label)
         print(f"agentprobe: appended {len(calls)} call(s) to {output} "
               f"(total: {len(existing) + len(calls)}){async_note}{gz_note}")
     else:
-        _save_calls(calls, output, meta_extra)
+        _save_calls(calls, output, meta_extra, label)
+        label_note = f" [label={label!r}]" if label else ""
         stdout_note = " [+stdout]" if meta_extra else ""
-        print(f"agentprobe: recorded {len(calls)} call(s) to {output}{async_note}{gz_note}{stdout_note}")
+        print(f"agentprobe: recorded {len(calls)} call(s) to {output}{async_note}{gz_note}{stdout_note}{label_note}")
 
 
 def cmd_record_watch(args):
@@ -1311,6 +1327,8 @@ def main():
     p_show.add_argument("fixture", help="Path to .jsonl fixture file")
     p_show.add_argument("--json", action="store_true", help="Output as machine-readable JSON")
     p_show.add_argument("--model", metavar="MODEL", help="Filter to calls using this model")
+    p_show.add_argument("--stdout", action="store_true",
+                        help="Also print captured stdout/stderr from _meta header")
     p_show.set_defaults(func=lambda a: cmd_show_json(a) if a.json else cmd_show(a))
 
     p_diff = sub.add_parser("diff", help="Compare two session fixtures")
@@ -1398,6 +1416,8 @@ def main():
                           help="API provider to intercept (default: openai)")
     p_record.add_argument("--max-calls", dest="max_calls", type=int, metavar="N",
                           help="Stop after recording N calls (truncates fixture)")
+    p_record.add_argument("--label", metavar="TAG",
+                          help="Embed a custom label in the fixture _meta header")
     p_record.set_defaults(func=lambda a: cmd_record_watch(a) if a.watch else cmd_record(a))
 
     p_replay = sub.add_parser(

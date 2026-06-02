@@ -1,6 +1,6 @@
 # agentprobe — Project Roadmap
 
-## Status: v0.15.0
+## Status: v0.16.0
 
 ---
 
@@ -74,24 +74,23 @@
 
 ---
 
-## Done (v0.15.0)
-- [x] `assert_tool_call_count_per_call`, `assert_no_tool_call_cycles`
-- [x] `agentprobe fixtures --summarize` (OpenAI + Anthropic)
-- [x] `agentprobe compare <a> <b>` — structural similarity score 0–100
+## Done (v0.16.0)
+- [x] `assert_final_tool_not_called`, `assert_output_word_count`, `assert_no_pii_in_tool_inputs`
+- [x] `record --label TAG`, `show --stdout`
 
 ---
 
-## Next — v0.16.0
+## Next — v0.17.0
 
 ### High priority
-- [ ] **`probe.assert_final_tool_not_called(name)`** — assert the last API call didn't invoke a specific tool (guards against unclosed tool loops)
-- [ ] **`agentprobe record --label TAG`** — embed a custom tag in `_meta` for easy fixture grouping
-- [ ] **`probe.assert_output_word_count(min, max)`** — simple length assertion on final output
+- [ ] **`probe.assert_tool_called_n_times(name, n)`** — total count across entire session (complement to per-call variant)
+- [ ] **`agentprobe record --format ndjson`** — alias for `--output-format jsonl` but also support JSON array output
+- [ ] **`probe.assert_no_sensitive_in_messages(patterns)`** — PII guard on outgoing request messages (not just tool inputs)
 
 ### Medium priority
 - [ ] **`messages.stream()` recording support** — `MessageStreamManager` higher-level API
-- [ ] **`agentprobe show --stdout`** — show captured stdout from `_meta` alongside calls
-- [ ] **`probe.assert_no_pii_in_tool_inputs(patterns)`** — regex-based PII guard on tool arguments
+- [ ] **`agentprobe fixtures --label FILTER`** — list fixtures with a specific `_meta.label`
+- [ ] **`probe.assert_tool_input_contains(name, key, value)`** — shorthand for checking a specific key in tool input without full schema
 
 ### Lower priority
 - [ ] **`agentprobe record --watch` real file watcher** — swap polling for `watchdog`
@@ -99,6 +98,6 @@
 
 ---
 
-## Publish checklist (v0.15.0)
-- [ ] `git tag v0.15.0 && git push --tags`
+## Publish checklist (v0.16.0)
+- [ ] `git tag v0.16.0 && git push --tags`
 - [ ] GitHub release with CHANGELOG excerpt
