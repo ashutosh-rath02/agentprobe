@@ -719,6 +719,48 @@ def cmd_stats_by_date(args):
                   f"{e['tokens']:,} tokens  ${e['cost']:.4f}")
 
 
+def cmd_stats_by_model(args):
+    """Aggregate stats grouped by model name across all fixtures in a directory."""
+    directory = Path(args.directory)
+    if not directory.is_dir():
+        print(f"agentprobe: not a directory: {args.directory}", file=sys.stderr)
+        sys.exit(1)
+
+    from agentprobe._pricing import estimate_cost, estimate_cost_anthropic
+    by_model: dict = {}
+    for f in sorted(directory.rglob("*.jsonl")) + sorted(directory.rglob("*.jsonl.gz")):
+        try:
+            calls = _load(str(f))
+        except Exception:
+            continue
+        for c in calls:
+            resp = c.get("response", {})
+            usage = resp.get("usage") or {}
+            model = resp.get("model") or c.get("request", {}).get("model", "unknown")
+            if _is_anthropic_response(resp):
+                inp = usage.get("input_tokens", 0) or 0
+                out = usage.get("output_tokens", 0) or 0
+                cost = estimate_cost_anthropic(model, inp, out)
+            else:
+                inp = usage.get("prompt_tokens", 0) or 0
+                out = usage.get("completion_tokens", 0) or 0
+                cost = estimate_cost(model, inp, out)
+            entry = by_model.setdefault(model, {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost": 0.0})
+            entry["calls"] += 1
+            entry["input_tokens"] += inp
+            entry["output_tokens"] += out
+            entry["cost"] += cost
+
+    if getattr(args, "json", False):
+        print(json.dumps(by_model, indent=2))
+    else:
+        print(f"Stats by model ({args.directory}):\n")
+        for model in sorted(by_model):
+            e = by_model[model]
+            print(f"  {model:<40} {e['calls']:>5} call(s)  "
+                  f"{e['input_tokens']:>8,} in  {e['output_tokens']:>8,} out  ${e['cost']:.4f}")
+
+
 def cmd_replay(args):
     """Run a Python script in pure replay mode against a saved fixture."""
     import runpy, time
@@ -861,31 +903,7 @@ def cmd_record(args):
         output_str = output_str + ".gz"
     output = Path(output_str)
     calls: list = []
-
-    # Patch sync completions via recording_context and async completions manually.
-    # Both patches share the same `calls` list so ordering is preserved.
-    orig_async = openai.resources.chat.completions.AsyncCompletions.create
-
-    async def _async_patch(self, **kwargs):
-        start = time.time()
-        if kwargs.get("stream"):
-            real = await orig_async(self, **kwargs)
-            raw = [c async for c in real]
-            ser = [c.model_dump() for c in raw]
-            calls.append(RecordedCall(
-                request=serialize_request(kwargs),
-                response=_assemble_from_chunks(ser),
-                chunks=ser,
-                duration_ms=(time.time() - start) * 1000,
-            ))
-            return MockAsyncStream(raw)
-        resp = await orig_async(self, **kwargs)
-        calls.append(RecordedCall(
-            request=serialize_request(kwargs),
-            response=resp.model_dump(),
-            duration_ms=(time.time() - start) * 1000,
-        ))
-        return resp
+    provider = getattr(args, "provider", "openai")
 
     # Detect whether the script is async (contains 'asyncio.run' or 'async def main').
     script_source = script.read_text()
@@ -908,8 +926,75 @@ def cmd_record(args):
         else:
             _run_script()
 
-    with recording_context(calls):
-        with patch.object(openai.resources.chat.completions.AsyncCompletions, "create", _async_patch):
+    if provider == "anthropic":
+        from agentprobe._anthropic_interceptor import (
+            anthropic_recording_context, async_anthropic_recording_context,
+        )
+        import anthropic.resources.messages
+
+        orig_async_anth = anthropic.resources.messages.AsyncMessages.create
+
+        async def _async_anth_patch(self, **kwargs):
+            from agentprobe._anthropic_interceptor import (
+                _serialize_anthropic_request, _assemble_anthropic_from_events,
+                MockAnthropicAsyncStream,
+            )
+            start = time.time()
+            if kwargs.get("stream"):
+                real = await orig_async_anth(self, **kwargs)
+                raw = [e async for e in real]
+                ser = [e.model_dump() for e in raw]
+                assembled = _assemble_anthropic_from_events(ser)
+                calls.append(RecordedCall(
+                    request=_serialize_anthropic_request(kwargs),
+                    response=assembled, chunks=ser,
+                    duration_ms=(time.time() - start) * 1000,
+                ))
+                return MockAnthropicAsyncStream(raw, assembled)
+            resp = await orig_async_anth(self, **kwargs)
+            calls.append(RecordedCall(
+                request=_serialize_anthropic_request(kwargs),
+                response=resp.model_dump(),
+                duration_ms=(time.time() - start) * 1000,
+            ))
+            return resp
+
+        outer_ctx = anthropic_recording_context(calls)
+        async_patch_ctx = patch.object(
+            anthropic.resources.messages.AsyncMessages, "create", _async_anth_patch
+        )
+    else:
+        # Default: OpenAI
+        orig_async = openai.resources.chat.completions.AsyncCompletions.create
+
+        async def _async_patch(self, **kwargs):
+            start = time.time()
+            if kwargs.get("stream"):
+                real = await orig_async(self, **kwargs)
+                raw = [c async for c in real]
+                ser = [c.model_dump() for c in raw]
+                calls.append(RecordedCall(
+                    request=serialize_request(kwargs),
+                    response=_assemble_from_chunks(ser),
+                    chunks=ser,
+                    duration_ms=(time.time() - start) * 1000,
+                ))
+                return MockAsyncStream(raw)
+            resp = await orig_async(self, **kwargs)
+            calls.append(RecordedCall(
+                request=serialize_request(kwargs),
+                response=resp.model_dump(),
+                duration_ms=(time.time() - start) * 1000,
+            ))
+            return resp
+
+        outer_ctx = recording_context(calls)
+        async_patch_ctx = patch.object(
+            openai.resources.chat.completions.AsyncCompletions, "create", _async_patch
+        )
+
+    with outer_ctx:
+        with async_patch_ctx:
             if timeout_s:
                 import threading
                 exc_box: list = []
@@ -1029,7 +1114,12 @@ def main():
                          help="Directory to scan (default: tests/fixtures)")
     p_stats.add_argument("--json", action="store_true", help="Output as machine-readable JSON")
     p_stats.add_argument("--by-date", action="store_true", help="Group stats by recording date")
-    p_stats.set_defaults(func=lambda a: cmd_stats_by_date(a) if a.by_date else cmd_fixtures_stats(a))
+    p_stats.add_argument("--by-model", action="store_true", help="Group stats by model name")
+    p_stats.set_defaults(func=lambda a: (
+        cmd_stats_by_date(a) if a.by_date else
+        cmd_stats_by_model(a) if a.by_model else
+        cmd_fixtures_stats(a)
+    ))
 
     p_migrate = sub.add_parser("migrate", help="Transform a fixture: rename models/tools")
     p_migrate.add_argument("input", help="Input .jsonl fixture")
@@ -1069,6 +1159,8 @@ def main():
                           help="Append captured calls to an existing fixture (don't overwrite)")
     p_record.add_argument("--capture-stdout", dest="capture_stdout", action="store_true",
                           help="Capture script stdout/stderr and store in fixture _meta header")
+    p_record.add_argument("--provider", choices=["openai", "anthropic"], default="openai",
+                          help="API provider to intercept (default: openai)")
     p_record.set_defaults(func=lambda a: cmd_record_watch(a) if a.watch else cmd_record(a))
 
     p_replay = sub.add_parser(

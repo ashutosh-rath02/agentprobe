@@ -379,6 +379,51 @@ class AssertionProxy:
 
         return self
 
+    def assert_no_hallucinated_tool_calls(self, *allowed: str) -> "AssertionProxy":
+        """Assert every tool call used a name from *allowed*.
+
+        Guards against agents inventing tool names not in their tool list::
+
+            probe.assert_no_hallucinated_tool_calls("search", "read_file", "bash")
+        """
+        allowed_set = set(allowed)
+        for i, call in enumerate(self._calls):
+            for choice in call.response.get("choices", []):
+                for tc in (choice.get("message", {}).get("tool_calls") or []):
+                    name = tc["function"]["name"]
+                    assert name in allowed_set, (
+                        f"agentprobe: call {i + 1} used undeclared tool '{name}'. "
+                        f"Allowed: {sorted(allowed_set)}"
+                    )
+        return self
+
+    def assert_max_tool_calls(self, n: int) -> "AssertionProxy":
+        """Assert the total number of tool calls across all iterations is at most *n*."""
+        total = sum(
+            len(choice.get("message", {}).get("tool_calls") or [])
+            for call in self._calls
+            for choice in call.response.get("choices", [])
+        )
+        assert total <= n, (
+            f"agentprobe: total tool calls {total} exceeds limit {n}"
+        )
+        return self
+
+    def assert_system_prompt_present(self) -> "AssertionProxy":
+        """Assert at least one call included a system message in its request.
+
+        Useful for catching misconfigured agents that forget the system prompt::
+
+            probe.assert_system_prompt_present()
+        """
+        for call in self._calls:
+            messages = call.request.get("messages") or []
+            if any(m.get("role") == "system" for m in messages):
+                return self
+        raise AssertionError(
+            "agentprobe: no call included a system message in its request"
+        )
+
     def assert_response_time_under(self, ms: float) -> "AssertionProxy":
         """Assert every call completed within *ms* milliseconds.
 
@@ -1521,6 +1566,43 @@ class AnthropicAssertionProxy:
                 f"(no text blocks and no tool_use blocks)"
             )
         return self
+
+    def assert_no_hallucinated_tool_calls(self, *allowed: str) -> "AnthropicAssertionProxy":
+        """Assert every tool call used a name from *allowed*."""
+        allowed_set = set(allowed)
+        for i, call in enumerate(self._calls):
+            for block in (call.response.get("content") or []):
+                if block.get("type") == "tool_use":
+                    name = block["name"]
+                    assert name in allowed_set, (
+                        f"agentprobe: call {i + 1} used undeclared tool '{name}'. "
+                        f"Allowed: {sorted(allowed_set)}"
+                    )
+        return self
+
+    def assert_max_tool_calls(self, n: int) -> "AnthropicAssertionProxy":
+        """Assert the total number of tool calls across all iterations is at most *n*."""
+        total = sum(
+            1 for call in self._calls
+            for block in (call.response.get("content") or [])
+            if block.get("type") == "tool_use"
+        )
+        assert total <= n, (
+            f"agentprobe: total tool calls {total} exceeds limit {n}"
+        )
+        return self
+
+    def assert_system_prompt_present(self) -> "AnthropicAssertionProxy":
+        """Assert at least one call included a system prompt in its request."""
+        for call in self._calls:
+            if call.request.get("system"):
+                return self
+            messages = call.request.get("messages") or []
+            if any(m.get("role") == "system" for m in messages):
+                return self
+        raise AssertionError(
+            "agentprobe: no call included a system prompt in its request"
+        )
 
     def assert_response_time_under(self, ms: float) -> "AnthropicAssertionProxy":
         """Assert every call completed within *ms* milliseconds."""

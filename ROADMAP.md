@@ -1,6 +1,6 @@
 # agentprobe — Project Roadmap
 
-## Status: v0.11.0
+## Status: v0.12.0
 
 ---
 
@@ -74,25 +74,31 @@
 
 ---
 
-## Next — v0.12.0
+## Done (v0.12.0)
+- [x] `record --provider anthropic` CLI
+- [x] `assert_no_hallucinated_tool_calls`, `assert_max_tool_calls`, `assert_system_prompt_present`
+- [x] `stats --by-model`
+
+---
+
+## Next — v0.13.0
 
 ### High priority
-- [ ] **`agentprobe record` Anthropic provider** — `record --provider anthropic` to intercept `messages.create` instead of `chat.completions.create` from the CLI
-- [ ] **`probe.assert_output_language(lang)`** — detect response language (e.g. assert agent always replies in English); uses `langdetect`
-- [ ] **`probe.assert_no_hallucinated_tool_calls(allowed_tools)`** — fail if agent calls a tool not in `allowed_tools`
+- [ ] **`probe.assert_output_language(lang)`** — detect response language using `langdetect`; useful for multilingual agents
+- [ ] **`agentprobe validate` Anthropic support** — structural linting for Anthropic fixtures
+- [ ] **`probe.assert_no_repeated_messages()`** — detect when identical user messages are sent across turns (stuck loop signal)
 
 ### Medium priority
-- [ ] **Fixture tagging / metadata assertions** — `probe.assert_meta(key, value)` to assert custom fields from `_meta` header
-- [ ] **`agentprobe stats` per-model breakdown** — group token/cost stats by model within a fixture directory
-- [ ] **`probe.call(n).assert_response_time_under(ms)`** — per-call latency on the scoped proxy
+- [ ] **`agentprobe fixtures --orphaned`** — list fixture files with no corresponding test reference
+- [ ] **`probe.assert_token_ratio(call_n, max_ratio)`** — per-call token growth relative to call 0
+- [ ] **`messages.stream()` recording support** — higher-level streaming via `MessageStreamManager`
 
 ### Lower priority
-- [ ] **`messages.stream()` recording support** — higher-level streaming API via `MessageStreamManager`
-- [ ] **`agentprobe record --watch` with real file watcher** — swap polling for `watchdog`
+- [ ] **`agentprobe record --watch` real file watcher** — swap polling for `watchdog`
 - [ ] **VS Code extension** — inline fixture viewer
 
 ---
 
-## Publish checklist (v0.11.0)
-- [ ] `git tag v0.11.0 && git push --tags`
+## Publish checklist (v0.12.0)
+- [ ] `git tag v0.12.0 && git push --tags`
 - [ ] GitHub release with CHANGELOG excerpt

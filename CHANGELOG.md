@@ -4,6 +4,21 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.12.0] — 2026-06-02
+
+### Added
+
+**AssertionProxy + AnthropicAssertionProxy**
+- `probe.assert_no_hallucinated_tool_calls(*allowed)` — fails if any tool name is not in the declared allowed set; guards against agents inventing tool names
+- `probe.assert_max_tool_calls(n)` — fails if the total number of tool calls across all iterations exceeds `n`
+- `probe.assert_system_prompt_present()` — fails if no call included a system message/prompt; catches misconfigured agents
+
+**CLI**
+- `agentprobe record --provider anthropic` — intercept `messages.create` instead of `chat.completions.create`; records Anthropic fixtures from the CLI
+- `agentprobe stats --by-model` — group aggregate token/cost stats by model name across all fixtures; `--json` for machine-readable output
+
+---
+
 ## [0.11.0] — 2026-06-02
 
 ### Added
