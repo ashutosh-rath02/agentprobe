@@ -58,7 +58,8 @@ client.chat.completions.create(
         cmd_record(args)
 
     assert output.exists()
-    lines = output.read_text().strip().split("\n")
+    from conftest import fixture_lines
+    lines = fixture_lines(output)
     assert len(lines) == 1
     data = json.loads(lines[0])
     assert data["request"]["model"] == "gpt-4o"
@@ -84,7 +85,8 @@ for _ in range(3):
     with patch("openai.resources.chat.completions.Completions.create", return_value=mock_resp):
         cmd_record(args)
 
-    lines = output.read_text().strip().split("\n")
+    from conftest import fixture_lines
+    lines = fixture_lines(output)
     assert len(lines) == 3
 
 

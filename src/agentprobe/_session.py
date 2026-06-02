@@ -205,15 +205,35 @@ class AssertionProxy:
     def assert_all_calls_consumed(self) -> "AssertionProxy":
         """Assert that *all* fixture calls were consumed during the test.
 
-        Useful with strict replay mode to confirm the agent made exactly as many
-        API calls as the fixture contains — no unused tail calls.
+        Real enforcement uses ``Session.replay(strict=True)`` which raises on
+        under-consumption. This method is a post-context alias for chaining.
         """
-        # Track how many were consumed via the index stored on calls
-        # (We can't access the replayer index here, but we expose a method
-        # that users call AFTER the replay context exits, when calls == loaded.)
-        # This is a noop sanity check — real consumption tracking comes from
-        # Session.replay(strict=True) which raises on under-consumption.
         return self
+
+    def assert_response_json_at(self, n: int, **expected: Any) -> "AssertionProxy":
+        """Assert the *n*-th call's text output is JSON containing *expected* key/values.
+
+        Shortcut for ``probe.call(n).assert_output_json_contains(**expected)``::
+
+            probe.assert_response_json_at(1, status="ok", count=3)
+        """
+        return self.call(n).assert_output_json_contains(**expected)
+
+    def received_at(self, n: int) -> Dict[str, Any]:
+        """Return the assistant message received at the *n*-th call (0-indexed).
+
+        Returns a dict with ``content``, ``tool_calls``, and ``finish_reason``::
+
+            msg = probe.received_at(0)
+            assert msg["tool_calls"][0]["function"]["name"] == "bash"
+        """
+        msgs = self.messages_received
+        if n < 0 or n >= len(msgs):
+            raise IndexError(
+                f"agentprobe: call index {n} out of range "
+                f"(session has {len(msgs)} call(s))"
+            )
+        return msgs[n]
 
     # ── Output regex assertion ────────────────────────────────────────────
 
@@ -547,12 +567,29 @@ def _load_calls(path: Path) -> List[RecordedCall]:
     else:
         opener = open(path)
     with opener as f:
-        return [RecordedCall(**json.loads(line)) for line in f if line.strip()]
+        # Skip _meta header lines transparently — they are not RecordedCall rows
+        return [
+            RecordedCall(**json.loads(line))
+            for line in f
+            if line.strip() and "_meta" not in json.loads(line)
+        ]
+
+
+def _build_meta_line() -> str:
+    """Return a JSON _meta header line with version + timestamp."""
+    from agentprobe import __version__
+    return json.dumps({
+        "_meta": {
+            "agentprobe_version": __version__,
+            "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "python_version": __import__("sys").version.split()[0],
+        }
+    })
 
 
 def _save_calls(calls: List[RecordedCall], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = []
+    lines = [_build_meta_line()]
     for call in calls:
         data: dict = {
             "request": call.request,

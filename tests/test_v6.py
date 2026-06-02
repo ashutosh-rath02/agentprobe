@@ -300,5 +300,6 @@ client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "conte
 
     import gzip
     with gzip.open(gz_path, "rt") as f:
-        data = json.loads(f.readline())
+        lines = [l for l in f if l.strip() and '"_meta"' not in l]
+    data = json.loads(lines[0])
     assert data["request"]["model"] == "gpt-4o"

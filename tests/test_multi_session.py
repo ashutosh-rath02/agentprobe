@@ -90,8 +90,9 @@ def test_multi_record_round_trip(tmp_path):
                     client_b.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": "y"}])
 
     assert fixture_a.exists() and fixture_b.exists()
-    data_a = json.loads(fixture_a.read_text().strip())
-    data_b = json.loads(fixture_b.read_text().strip())
+    from conftest import fixture_lines
+    data_a = json.loads(fixture_lines(fixture_a)[0])
+    data_b = json.loads(fixture_lines(fixture_b)[0])
     assert data_a["response"]["choices"][0]["message"]["content"] == "2+2 equals 4."
     assert data_b["response"]["choices"][0]["message"]["content"] == "3+3 equals 6."
 

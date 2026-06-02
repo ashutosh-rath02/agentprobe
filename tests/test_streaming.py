@@ -214,7 +214,8 @@ def test_streaming_record_round_trip(tmp_path):
             _fake_streaming_agent(client)
 
     assert fixture.exists()
-    lines = fixture.read_text().strip().split("\n")
+    from conftest import fixture_lines
+    lines = fixture_lines(fixture)
     assert len(lines) == 2
     data = json.loads(lines[0])
     assert "chunks" in data
@@ -265,7 +266,8 @@ async def test_async_streaming_record_round_trip(tmp_path):
             await _fake_async_streaming_agent(client)
 
     assert fixture.exists()
-    lines = fixture.read_text().strip().split("\n")
+    from conftest import fixture_lines
+    lines = fixture_lines(fixture)
     assert len(lines) == 2
     data = json.loads(lines[0])
     assert "chunks" in data

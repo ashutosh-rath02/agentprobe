@@ -32,9 +32,9 @@ def test_save_and_load_gzip_fixture(tmp_path):
             )
 
     assert gz_path.exists()
-    # Verify it's actually gzip compressed
+    # Verify it's actually gzip compressed; skip the _meta header line
     with gzip.open(gz_path, "rt") as f:
-        lines = [l for l in f if l.strip()]
+        lines = [l for l in f if l.strip() and '"_meta"' not in l]
     assert len(lines) == 2
     data = json.loads(lines[0])
     assert "request" in data and "response" in data

@@ -10,7 +10,25 @@ def _load(path: str):
     if not p.exists():
         print(f"agentprobe: file not found: {path}", file=sys.stderr)
         sys.exit(1)
-    return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+    rows = [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+    return [r for r in rows if "_meta" not in r]
+
+
+def _load_meta(path: str) -> dict:
+    """Return the _meta header dict from a fixture, or empty dict if absent."""
+    p = Path(path)
+    if not p.exists():
+        return {}
+    for line in p.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            d = json.loads(line)
+            if "_meta" in d:
+                return d["_meta"]
+        except json.JSONDecodeError:
+            pass
+    return {}
 
 
 def _fmt_choice(choice: dict) -> list[str]:
@@ -35,7 +53,11 @@ def _filter_calls(calls: list, model_filter: str | None) -> list:
 
 def cmd_show(args):
     calls = _filter_calls(_load(args.fixture), getattr(args, "model", None))
-    print(f"fixture: {args.fixture}  ({len(calls)} call(s))\n")
+    meta = _load_meta(args.fixture)
+    meta_str = ""
+    if meta:
+        meta_str = f"  [v{meta.get('agentprobe_version', '?')} recorded {meta.get('recorded_at', '?')}]"
+    print(f"fixture: {args.fixture}  ({len(calls)} call(s)){meta_str}\n")
     for i, call in enumerate(calls, 1):
         req = call.get("request", {})
         resp = call.get("response", {})
@@ -112,6 +134,7 @@ def cmd_show_json(args):
             "estimated_total_cost_usd": round(total_cost, 8),
             "streaming_calls": sum(1 for e in out if e["streaming"]),
         },
+        "meta": _load_meta(args.fixture),
     }
     print(json.dumps(result, indent=2))
 
@@ -584,15 +607,36 @@ def cmd_record(args):
     script_source = script.read_text()
     is_async = "asyncio.run(" in script_source or "async def main" in script_source
 
+    timeout_s = getattr(args, "timeout", None)
+
+    def _run_script():
+        runpy.run_path(str(script), run_name="__main__")
+
     with recording_context(calls):
         with patch.object(openai.resources.chat.completions.AsyncCompletions, "create", _async_patch):
-            try:
-                # For both sync and async scripts: run directly.
-                # Async scripts call asyncio.run() themselves; the class-level
-                # patches are already active so calls inside that loop are captured.
-                runpy.run_path(str(script), run_name="__main__")
-            except SystemExit:
-                pass
+            if timeout_s:
+                import threading
+                exc_box: list = []
+                def _target():
+                    try:
+                        _run_script()
+                    except SystemExit:
+                        pass
+                    except Exception as e:
+                        exc_box.append(e)
+                t = threading.Thread(target=_target, daemon=True)
+                t.start()
+                t.join(timeout=timeout_s)
+                if t.is_alive():
+                    print(f"agentprobe: script timed out after {timeout_s}s — "
+                          f"saving {len(calls)} call(s) recorded so far", file=sys.stderr)
+                elif exc_box:
+                    raise exc_box[0]
+            else:
+                try:
+                    _run_script()
+                except SystemExit:
+                    pass
 
     _save_calls(calls, output)
     async_note = " (async script)" if is_async else ""
@@ -687,6 +731,8 @@ def main():
                           help="Watch script for changes and re-record automatically")
     p_record.add_argument("--interval", type=float, default=1.0,
                           help="Polling interval in seconds for --watch (default: 1.0)")
+    p_record.add_argument("--timeout", type=float, metavar="SECONDS",
+                          help="Kill the script after SECONDS (saves calls recorded so far)")
     p_record.set_defaults(func=lambda a: cmd_record_watch(a) if a.watch else cmd_record(a))
 
     p_validate = sub.add_parser("validate", help="Validate a fixture file for correctness")

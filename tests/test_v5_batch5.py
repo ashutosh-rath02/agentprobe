@@ -160,7 +160,8 @@ def test_dump_fixture_saves_inject_session(tmp_path):
     probe.dump_fixture(output)
 
     assert output.exists()
-    data = json.loads(output.read_text().strip())
+    from conftest import fixture_lines
+    data = json.loads(fixture_lines(output)[0])
     assert data["response"]["choices"][0]["message"]["content"] == "Hello from inject!"
 
 

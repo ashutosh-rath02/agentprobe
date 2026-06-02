@@ -87,7 +87,8 @@ async def test_async_record_round_trip(tmp_path):
             await _fake_async_agent(client)
 
     assert fixture.exists()
-    lines = fixture.read_text().strip().split("\n")
+    from conftest import fixture_lines
+    lines = fixture_lines(fixture)
     assert len(lines) == 2
 
 

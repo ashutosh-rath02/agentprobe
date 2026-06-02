@@ -190,7 +190,8 @@ def test_record_round_trip(tmp_path):
             _fake_agent(client)
 
     assert fixture.exists()
-    lines = fixture.read_text().strip().split("\n")
+    from conftest import fixture_lines
+    lines = fixture_lines(fixture)
     assert len(lines) == 2
     data = json.loads(lines[0])
     assert "request" in data
