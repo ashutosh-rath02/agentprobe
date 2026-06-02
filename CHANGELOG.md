@@ -4,6 +4,27 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.9.0] — 2026-06-02
+
+### Added
+
+**Anthropic Claude support**
+- `AnthropicSession` — full record/replay/auto/inject/record_append/replay_chain for the Anthropic `messages.create` API (sync + async via `AsyncAnthropic`)
+- `AnthropicAssertionProxy` — complete assertion DSL mirroring `AssertionProxy` but reading Anthropic response format (`content` blocks, `stop_reason`, `usage.input_tokens`/`output_tokens`)
+- Anthropic pricing table: Claude 4 (Opus/Sonnet/Haiku), Claude 3.5, and Claude 3 families
+- `estimate_cost_anthropic(model, input_tokens, output_tokens)` in `_pricing`
+
+**AssertionProxy** (OpenAI)
+- `probe.assert_no_duplicate_tool_calls()` — fails if any tool is invoked twice with identical arguments (detects looping agents)
+- `probe.assert_context_growth(max_ratio)` — asserts prompt tokens never grow by more than `max_ratio` between consecutive calls
+
+**AnthropicAssertionProxy** (Anthropic)
+- All methods above plus full parity with `AssertionProxy`: `assert_tool_called`, `assert_tool_called_with`, `assert_tool_sequence`, `assert_stop_reason`, `assert_output_contains`, `assert_max_tokens`, `assert_max_cost`, `assert_cost_per_call`, `assert_messages_count`, `assert_model_used`, `assert_all_models_in`, `assert_no_empty_responses`, `assert_no_duplicate_tool_calls`, `assert_context_growth`
+- Properties: `iteration_count`, `tools_called`, `first/last_tool_called`, `final_output`, `total_tokens`, `total_input/output_tokens`, `estimated_cost_usd`, `models_used`, `call_log`, `tool_call_inputs`, `messages_sent`
+- `call(n)` scoped per-call proxy, `summary_dict()`, `export_json()`
+
+---
+
 ## [0.8.0] — 2026-06-02
 
 ### Added

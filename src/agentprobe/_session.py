@@ -379,6 +379,55 @@ class AssertionProxy:
 
         return self
 
+    # ── Duplicate / growth assertions ─────────────────────────────────────
+
+    def assert_no_duplicate_tool_calls(self) -> "AssertionProxy":
+        """Assert no tool was called twice with identical arguments.
+
+        Catches agents stuck in a loop repeating the same tool invocation::
+
+            probe.assert_no_duplicate_tool_calls()
+        """
+        seen: set = set()
+        for i, call in enumerate(self._calls):
+            for choice in call.response.get("choices", []):
+                for tc in (choice.get("message", {}).get("tool_calls") or []):
+                    name = tc["function"]["name"]
+                    try:
+                        args_norm = json.dumps(
+                            json.loads(tc["function"]["arguments"]), sort_keys=True
+                        )
+                    except (json.JSONDecodeError, TypeError):
+                        args_norm = tc["function"]["arguments"]
+                    key = (name, args_norm)
+                    assert key not in seen, (
+                        f"agentprobe: call {i + 1} is a duplicate tool call — "
+                        f"'{name}' with args {args_norm} was already invoked"
+                    )
+                    seen.add(key)
+        return self
+
+    def assert_context_growth(self, max_ratio: float) -> "AssertionProxy":
+        """Assert context size (prompt tokens) never grows by more than *max_ratio*
+        between consecutive calls.
+
+        Useful to catch unbounded context accumulation::
+
+            probe.assert_context_growth(2.0)  # context must not double each call
+        """
+        prev: Optional[int] = None
+        for i, call in enumerate(self._calls):
+            curr = (call.response.get("usage") or {}).get("prompt_tokens")
+            if curr and prev:
+                ratio = curr / prev
+                assert ratio <= max_ratio, (
+                    f"agentprobe: context grew {ratio:.2f}x from call {i} to call {i + 1} "
+                    f"(limit: {max_ratio}x). {prev} -> {curr} prompt tokens."
+                )
+            if curr:
+                prev = curr
+        return self
+
     # ── Output regex assertion ────────────────────────────────────────────
 
     def assert_output_matches(self, pattern: str) -> "AssertionProxy":
@@ -1214,3 +1263,525 @@ class MultiSession:
 
         for pat in all_patches:
             pat.stop()
+
+
+# ── Anthropic support ─────────────────────────────────────────────────────────
+
+class AnthropicAssertionProxy:
+    """Fluent assertion interface for sessions recorded against the Anthropic API.
+
+    Mirrors :class:`AssertionProxy` but reads Anthropic ``Message`` response
+    format (``content`` list of blocks, ``stop_reason``, ``usage.input_tokens``,
+    etc.) rather than OpenAI's ``choices`` structure.
+    """
+
+    def __init__(self, calls: List[RecordedCall]):
+        self._calls = calls
+
+    # ── Iteration assertions ──────────────────────────────────────────────
+
+    def assert_max_iterations(self, n: int) -> "AnthropicAssertionProxy":
+        actual = len(self._calls)
+        assert actual <= n, (
+            f"agentprobe: expected at most {n} LLM call(s), got {actual}"
+        )
+        return self
+
+    def assert_min_iterations(self, n: int) -> "AnthropicAssertionProxy":
+        actual = len(self._calls)
+        assert actual >= n, (
+            f"agentprobe: expected at least {n} LLM call(s), got {actual}"
+        )
+        return self
+
+    def assert_iteration_count(self, n: int) -> "AnthropicAssertionProxy":
+        actual = len(self._calls)
+        assert actual == n, (
+            f"agentprobe: expected exactly {n} LLM call(s), got {actual}"
+        )
+        return self
+
+    # ── Tool call assertions ──────────────────────────────────────────────
+
+    def assert_tool_called(self, tool_name: str) -> "AnthropicAssertionProxy":
+        names = self._all_tool_names()
+        assert tool_name in names, (
+            f"agentprobe: expected tool '{tool_name}' to be called, "
+            f"but only these were called: {sorted(names) or '(none)'}"
+        )
+        return self
+
+    def assert_not_tool_called(self, tool_name: str) -> "AnthropicAssertionProxy":
+        names = self._all_tool_names()
+        assert tool_name not in names, (
+            f"agentprobe: expected tool '{tool_name}' NOT to be called, but it was"
+        )
+        return self
+
+    def assert_tool_called_with(self, tool_name: str, **expected_input: Any) -> "AnthropicAssertionProxy":
+        """Assert *tool_name* was called at least once with all *expected_input* key/values."""
+        inputs = self._tool_inputs(tool_name)
+        assert inputs, f"agentprobe: tool '{tool_name}' was never called"
+        for actual in inputs:
+            if all(actual.get(k) == v for k, v in expected_input.items()):
+                return self
+        raise AssertionError(
+            f"agentprobe: tool '{tool_name}' was called but never with "
+            f"the expected inputs: {expected_input}. Actual inputs: {inputs}"
+        )
+
+    def assert_tool_call_count(self, tool_name: str, n: int) -> "AnthropicAssertionProxy":
+        count = len(self._tool_inputs(tool_name))
+        assert count == n, (
+            f"agentprobe: expected tool '{tool_name}' to be called {n} time(s), "
+            f"got {count}"
+        )
+        return self
+
+    def assert_no_tool_calls(self) -> "AnthropicAssertionProxy":
+        names = self._all_tool_names()
+        assert not names, (
+            f"agentprobe: expected no tool calls, but these tools were called: {sorted(names)}"
+        )
+        return self
+
+    def assert_tool_sequence(self, *names: str) -> "AnthropicAssertionProxy":
+        """Assert tools were called in the exact order *names* specifies."""
+        actual = self.tools_called
+        assert list(names) == actual, (
+            f"agentprobe: expected tool sequence {list(names)}, got {actual}"
+        )
+        return self
+
+    # ── Stop reason assertions ────────────────────────────────────────────
+
+    def assert_stop_reason(self, reason: str) -> "AnthropicAssertionProxy":
+        if not self._calls:
+            raise AssertionError("agentprobe: no calls recorded in session")
+        actual = self._calls[-1].response.get("stop_reason")
+        assert actual == reason, (
+            f"agentprobe: expected stop_reason '{reason}', got '{actual}'"
+        )
+        return self
+
+    # ── Output assertions ─────────────────────────────────────────────────
+
+    def assert_output_contains(self, substring: str) -> "AnthropicAssertionProxy":
+        out = self.final_output or ""
+        assert substring in out, (
+            f"agentprobe: expected output to contain '{substring}'\n"
+            f"Actual output: {out[:200]!r}"
+        )
+        return self
+
+    def assert_output_not_contains(self, substring: str) -> "AnthropicAssertionProxy":
+        out = self.final_output or ""
+        assert substring not in out, (
+            f"agentprobe: expected output NOT to contain '{substring}'"
+        )
+        return self
+
+    def assert_output_matches(self, pattern: str) -> "AnthropicAssertionProxy":
+        import re
+        out = self.final_output or ""
+        assert re.search(pattern, out), (
+            f"agentprobe: expected output to match pattern '{pattern}'\n"
+            f"Actual output: {out[:200]!r}"
+        )
+        return self
+
+    # ── Token / cost assertions ───────────────────────────────────────────
+
+    def assert_max_tokens(self, n: int) -> "AnthropicAssertionProxy":
+        total = self.total_tokens
+        assert total <= n, (
+            f"agentprobe: total tokens {total} exceeds limit {n}"
+        )
+        return self
+
+    def assert_max_cost(self, usd: float) -> "AnthropicAssertionProxy":
+        cost = self.estimated_cost_usd
+        assert cost <= usd, (
+            f"agentprobe: estimated cost ${cost:.6f} exceeds limit ${usd:.6f}"
+        )
+        return self
+
+    def assert_cost_per_call(self, usd: float) -> "AnthropicAssertionProxy":
+        from ._pricing import estimate_cost_anthropic
+        for i, call in enumerate(self._calls):
+            model = call.response.get("model") or call.request.get("model", "")
+            usage = call.response.get("usage") or {}
+            cost = estimate_cost_anthropic(
+                model,
+                usage.get("input_tokens", 0) or 0,
+                usage.get("output_tokens", 0) or 0,
+            )
+            assert cost <= usd, (
+                f"agentprobe: call {i + 1} estimated cost ${cost:.6f} exceeds "
+                f"limit ${usd:.6f} (model={model!r})"
+            )
+        return self
+
+    def assert_messages_count(self, n: int) -> "AnthropicAssertionProxy":
+        total = sum(len(call.request.get("messages", [])) for call in self._calls)
+        assert total == n, (
+            f"agentprobe: expected {n} total messages sent, got {total}"
+        )
+        return self
+
+    def assert_model_used(self, model: str) -> "AnthropicAssertionProxy":
+        for i, call in enumerate(self._calls):
+            actual = call.response.get("model") or call.request.get("model", "")
+            assert actual == model, (
+                f"agentprobe: call {i + 1} used model '{actual}', expected '{model}'"
+            )
+        return self
+
+    def assert_all_models_in(self, *allowed: str) -> "AnthropicAssertionProxy":
+        allowed_set = set(allowed)
+        for i, call in enumerate(self._calls):
+            model = call.response.get("model") or call.request.get("model", "")
+            assert model in allowed_set, (
+                f"agentprobe: call {i + 1} used disallowed model '{model}'. "
+                f"Allowed: {sorted(allowed_set)}"
+            )
+        return self
+
+    def assert_no_empty_responses(self) -> "AnthropicAssertionProxy":
+        for i, call in enumerate(self._calls):
+            blocks = call.response.get("content") or []
+            has_text = any(b.get("type") == "text" and b.get("text") for b in blocks)
+            has_tools = any(b.get("type") == "tool_use" for b in blocks)
+            assert has_text or has_tools, (
+                f"agentprobe: call {i + 1} returned an empty response "
+                f"(no text blocks and no tool_use blocks)"
+            )
+        return self
+
+    # ── Duplicate / growth assertions ─────────────────────────────────────
+
+    def assert_no_duplicate_tool_calls(self) -> "AnthropicAssertionProxy":
+        seen: set = set()
+        for i, call in enumerate(self._calls):
+            for block in (call.response.get("content") or []):
+                if block.get("type") != "tool_use":
+                    continue
+                name = block["name"]
+                args_norm = json.dumps(block.get("input", {}), sort_keys=True)
+                key = (name, args_norm)
+                assert key not in seen, (
+                    f"agentprobe: call {i + 1} is a duplicate tool call — "
+                    f"'{name}' with input {args_norm} was already invoked"
+                )
+                seen.add(key)
+        return self
+
+    def assert_context_growth(self, max_ratio: float) -> "AnthropicAssertionProxy":
+        prev: Optional[int] = None
+        for i, call in enumerate(self._calls):
+            curr = (call.response.get("usage") or {}).get("input_tokens")
+            if curr and prev:
+                ratio = curr / prev
+                assert ratio <= max_ratio, (
+                    f"agentprobe: context grew {ratio:.2f}x from call {i} to call {i + 1} "
+                    f"(limit: {max_ratio}x). {prev} -> {curr} input tokens."
+                )
+            if curr:
+                prev = curr
+        return self
+
+    # ── Per-call access ───────────────────────────────────────────────────
+
+    def call(self, n: int) -> "AnthropicAssertionProxy":
+        if n < 0 or n >= len(self._calls):
+            raise IndexError(
+                f"agentprobe: call index {n} out of range "
+                f"(session has {len(self._calls)} call(s))"
+            )
+        return AnthropicAssertionProxy([self._calls[n]])
+
+    # ── Properties ────────────────────────────────────────────────────────
+
+    @property
+    def iteration_count(self) -> int:
+        return len(self._calls)
+
+    @property
+    def tools_called(self) -> List[str]:
+        tools = []
+        for call in self._calls:
+            for block in (call.response.get("content") or []):
+                if block.get("type") == "tool_use":
+                    tools.append(block["name"])
+        return tools
+
+    @property
+    def first_tool_called(self) -> Optional[str]:
+        for call in self._calls:
+            for block in (call.response.get("content") or []):
+                if block.get("type") == "tool_use":
+                    return block["name"]
+        return None
+
+    @property
+    def last_tool_called(self) -> Optional[str]:
+        last = None
+        for call in self._calls:
+            for block in (call.response.get("content") or []):
+                if block.get("type") == "tool_use":
+                    last = block["name"]
+        return last
+
+    @property
+    def final_output(self) -> Optional[str]:
+        if not self._calls:
+            return None
+        for block in reversed(self._calls[-1].response.get("content") or []):
+            if block.get("type") == "text" and block.get("text"):
+                return block["text"]
+        return None
+
+    @property
+    def total_tokens(self) -> int:
+        return self.total_input_tokens + self.total_output_tokens
+
+    @property
+    def total_input_tokens(self) -> int:
+        return sum(
+            (call.response.get("usage") or {}).get("input_tokens", 0) or 0
+            for call in self._calls
+        )
+
+    @property
+    def total_output_tokens(self) -> int:
+        return sum(
+            (call.response.get("usage") or {}).get("output_tokens", 0) or 0
+            for call in self._calls
+        )
+
+    @property
+    def estimated_cost_usd(self) -> float:
+        from ._pricing import estimate_cost_anthropic
+        total = 0.0
+        for call in self._calls:
+            model = call.response.get("model") or call.request.get("model", "")
+            usage = call.response.get("usage") or {}
+            total += estimate_cost_anthropic(
+                model,
+                usage.get("input_tokens", 0) or 0,
+                usage.get("output_tokens", 0) or 0,
+            )
+        return round(total, 8)
+
+    @property
+    def models_used(self) -> List[str]:
+        return [
+            call.response.get("model") or call.request.get("model", "")
+            for call in self._calls
+        ]
+
+    @property
+    def call_log(self) -> List[Dict[str, Any]]:
+        return [{"request": c.request, "response": c.response} for c in self._calls]
+
+    @property
+    def tool_call_inputs(self) -> Dict[str, List[Dict[str, Any]]]:
+        result: Dict[str, List[Dict[str, Any]]] = {}
+        for call in self._calls:
+            for block in (call.response.get("content") or []):
+                if block.get("type") == "tool_use":
+                    result.setdefault(block["name"], []).append(block.get("input", {}))
+        return result
+
+    @property
+    def messages_sent(self) -> List[List[Any]]:
+        return [call.request.get("messages", []) for call in self._calls]
+
+    # ── Export ────────────────────────────────────────────────────────────
+
+    def summary_dict(self) -> Dict[str, Any]:
+        return {
+            "iteration_count": self.iteration_count,
+            "total_tokens": self.total_tokens,
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "estimated_cost_usd": self.estimated_cost_usd,
+            "tools_called": self.tools_called,
+            "models_used": self.models_used,
+            "final_output": self.final_output,
+        }
+
+    def export_json(self, indent: int = 2) -> str:
+        return json.dumps({
+            "summary": self.summary_dict(),
+            "calls": self.call_log,
+        }, indent=indent, default=str)
+
+    # ── Helpers ───────────────────────────────────────────────────────────
+
+    def _all_tool_names(self) -> set:
+        names: set = set()
+        for call in self._calls:
+            for block in (call.response.get("content") or []):
+                if block.get("type") == "tool_use":
+                    names.add(block["name"])
+        return names
+
+    def _tool_inputs(self, tool_name: str) -> List[Dict[str, Any]]:
+        inputs = []
+        for call in self._calls:
+            for block in (call.response.get("content") or []):
+                if block.get("type") == "tool_use" and block["name"] == tool_name:
+                    inputs.append(block.get("input", {}))
+        return inputs
+
+
+class AnthropicSession:
+    """Context-manager entry point for agentprobe record/replay with the Anthropic API.
+
+    Works identically to :class:`Session` but patches
+    ``anthropic.resources.messages.Messages.create`` (sync) and
+    ``AsyncMessages.create`` (async) instead of the OpenAI endpoint.
+
+    Usage::
+
+        import anthropic
+        session = AnthropicSession()
+        client = anthropic.Anthropic(api_key="...")
+
+        # Record a real session once
+        with session.record("tests/fixtures/my_agent.jsonl") as probe:
+            my_agent(client)
+
+        # Replay deterministically in CI
+        with session.replay("tests/fixtures/my_agent.jsonl") as probe:
+            my_agent(client)
+        probe.assert_tool_called("search")
+        probe.assert_stop_reason("end_turn")
+    """
+
+    # ── Sync ─────────────────────────────────────────────────────────────
+
+    @contextmanager
+    def record(self, path: Union[str, Path]):
+        """Intercept real Anthropic API calls and save them to *path* (JSONL)."""
+        from ._anthropic_interceptor import anthropic_recording_context
+        path = Path(path)
+        calls: List[RecordedCall] = []
+        with anthropic_recording_context(calls):
+            yield AnthropicAssertionProxy(calls)
+        _save_calls(calls, path)
+
+    @contextmanager
+    def replay(self, path: Union[str, Path], *, strict: bool = False):
+        """Replay calls from *path* without hitting the Anthropic API."""
+        from ._anthropic_interceptor import (
+            anthropic_replaying_context,
+            _anthropic_strict_replaying_context,
+        )
+        path = Path(path)
+        _check_exists(path)
+        calls = _load_calls(path)
+        index: List[int] = [0]
+
+        if strict:
+            with _anthropic_strict_replaying_context(calls, index):
+                yield AnthropicAssertionProxy(calls)
+            if index[0] < len(calls):
+                raise AssertionError(
+                    f"agentprobe: strict replay — fixture has {len(calls)} call(s) "
+                    f"but the agent only consumed {index[0]}."
+                )
+        else:
+            with anthropic_replaying_context(calls):
+                yield AnthropicAssertionProxy(calls)
+
+    @contextmanager
+    def replay_chain(self, *paths: Union[str, Path]):
+        """Replay multiple fixtures end-to-end as a single session."""
+        from ._anthropic_interceptor import anthropic_replaying_context
+        all_calls: List[RecordedCall] = []
+        for p in paths:
+            p = Path(p)
+            _check_exists(p)
+            all_calls.extend(_load_calls(p))
+        with anthropic_replaying_context(all_calls):
+            yield AnthropicAssertionProxy(all_calls)
+
+    @contextmanager
+    def auto(self, path: Union[str, Path]):
+        """Record if fixture missing or AGENTPROBE_UPDATE=1; replay otherwise."""
+        path = Path(path)
+        if path.exists() and not _should_update():
+            with self.replay(path) as proxy:
+                yield proxy
+        else:
+            with self.record(path) as proxy:
+                yield proxy
+
+    @contextmanager
+    def inject(self, *responses):
+        """Replay explicit Anthropic ``Message`` objects (or dicts) without a fixture.
+
+        Pass ``anthropic.types.Message`` objects or raw dicts that can be
+        validated by ``Message.model_validate``::
+
+            resp = anthropic.types.Message.model_validate({...})
+            with session.inject(resp) as probe:
+                my_agent(client)
+        """
+        import anthropic.types
+        from ._anthropic_interceptor import anthropic_replaying_context
+        calls: List[RecordedCall] = []
+        for resp in responses:
+            if isinstance(resp, dict):
+                validated = anthropic.types.Message.model_validate(resp)
+                calls.append(RecordedCall(request={}, response=validated.model_dump()))
+            else:
+                calls.append(RecordedCall(request={}, response=resp.model_dump()))
+        with anthropic_replaying_context(calls):
+            yield AnthropicAssertionProxy(calls)
+
+    @contextmanager
+    def record_append(self, path: Union[str, Path]):
+        """Like record() but appends new calls to an existing fixture."""
+        from ._anthropic_interceptor import anthropic_recording_context
+        path = Path(path)
+        new_calls: List[RecordedCall] = []
+        with anthropic_recording_context(new_calls):
+            yield AnthropicAssertionProxy(new_calls)
+        existing = _load_calls(path) if path.exists() else []
+        _save_calls(existing + new_calls, path)
+
+    # ── Async ─────────────────────────────────────────────────────────────
+
+    @asynccontextmanager
+    async def async_record(self, path: Union[str, Path]):
+        """Async version of record() — for agents using ``AsyncAnthropic``."""
+        from ._anthropic_interceptor import async_anthropic_recording_context
+        path = Path(path)
+        calls: List[RecordedCall] = []
+        async with async_anthropic_recording_context(calls):
+            yield AnthropicAssertionProxy(calls)
+        _save_calls(calls, path)
+
+    @asynccontextmanager
+    async def async_replay(self, path: Union[str, Path]):
+        """Async version of replay() — for agents using ``AsyncAnthropic``."""
+        from ._anthropic_interceptor import async_anthropic_replaying_context
+        path = Path(path)
+        _check_exists(path)
+        calls = _load_calls(path)
+        async with async_anthropic_replaying_context(calls):
+            yield AnthropicAssertionProxy(calls)
+
+    @asynccontextmanager
+    async def async_auto(self, path: Union[str, Path]):
+        """Async version of auto()."""
+        path = Path(path)
+        if path.exists() and not _should_update():
+            async with self.async_replay(path) as proxy:
+                yield proxy
+        else:
+            async with self.async_record(path) as proxy:
+                yield proxy

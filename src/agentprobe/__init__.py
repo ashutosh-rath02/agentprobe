@@ -1,4 +1,16 @@
-from ._session import AssertionProxy, MultiSession, Session
+from ._session import (
+    AnthropicAssertionProxy,
+    AnthropicSession,
+    AssertionProxy,
+    MultiSession,
+    Session,
+)
 
-__all__ = ["Session", "MultiSession", "AssertionProxy"]
-__version__ = "0.6.0"
+__all__ = [
+    "Session",
+    "MultiSession",
+    "AssertionProxy",
+    "AnthropicSession",
+    "AnthropicAssertionProxy",
+]
+__version__ = "0.9.0"

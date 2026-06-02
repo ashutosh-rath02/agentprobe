@@ -1,6 +1,6 @@
 # agentprobe — Project Roadmap
 
-## Status: v0.8.0
+## Status: v0.9.0
 
 ---
 
@@ -58,17 +58,24 @@
 
 ---
 
-## Next — v0.9.0
+## Done (v0.9.0)
+- [x] **Anthropic Claude support** — `AnthropicSession` + `AnthropicAssertionProxy`; full record/replay/inject parity
+- [x] **`probe.assert_no_duplicate_tool_calls()`** — OpenAI and Anthropic
+- [x] **`probe.assert_context_growth(max_ratio)`** — OpenAI and Anthropic
+
+---
+
+## Next — v0.10.0
 
 ### High priority
-- [ ] **Anthropic Claude support** — patch `anthropic.Anthropic().messages.create` (sync + async); dual-provider parity so the same fixture format works for both OpenAI and Claude agents
-- [ ] **`probe.assert_no_duplicate_tool_calls()`** — detect when an agent calls the same tool with identical args twice (hallucination / loop signal)
-- [ ] **`probe.assert_context_growth(max_ratio)`** — assert `prompt_tokens[n] / prompt_tokens[n-1] <= max_ratio` across calls; catches unbounded context accumulation
+- [ ] **`agentprobe record --capture-stdout`** — capture script stdout/stderr into `_meta.stdout`; useful for debugging
+- [ ] **`agentprobe replay <fixture> <script>`** — CLI command to run a script in pure replay mode without pytest
+- [ ] **`AnthropicMultiSession`** — per-client patching for multi-agent Anthropic setups (mirrors `MultiSession` for OpenAI)
 
 ### Medium priority
-- [ ] **`agentprobe record --capture-stdout`** — capture script stdout/stderr into `_meta.stdout` in the fixture; useful for debugging agent log output
-- [ ] **`agentprobe replay <fixture> <script>`** — CLI command to run a script in pure replay mode without pytest; developer convenience for debugging
-- [ ] **`probe.call(n).tool_call_inputs`** — expose `tool_call_inputs` on the scoped per-call proxy (currently only on the full session proxy)
+- [ ] **`probe.call(n).tool_call_inputs`** — expose `tool_call_inputs` on the scoped per-call proxy (currently full-session only)
+- [ ] **`probe.assert_tool_called_before_output()`** — assert no tool was called after the final text response (guards against weird finish ordering)
+- [ ] **Anthropic streaming support** — record/replay `messages.stream()` / `create(stream=True)` calls
 
 ### Lower priority
 - [ ] **`agentprobe record --watch` with real file watcher** — swap polling for `watchdog` event-based re-recording
@@ -76,6 +83,6 @@
 
 ---
 
-## Publish checklist (v0.8.0)
-- [ ] `git tag v0.8.0 && git push --tags`
+## Publish checklist (v0.9.0)
+- [ ] `git tag v0.9.0 && git push --tags`
 - [ ] GitHub release with CHANGELOG excerpt
