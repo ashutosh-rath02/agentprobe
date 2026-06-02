@@ -34,12 +34,12 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-async = [
-    "pytest-asyncio>=0.23",
+xdist = [
+    "filelock>=3.0",
 ]
 dev = [
     "hatch",
-    "pytest-asyncio>=0.23",
+    "filelock>=3.0",
 ]
 
 [project.urls]

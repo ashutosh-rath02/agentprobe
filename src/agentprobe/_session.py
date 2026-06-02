@@ -364,27 +364,58 @@ class AssertionProxy:
 
 
 def _load_calls(path: Path) -> List[RecordedCall]:
-    with open(path) as f:
+    if path.suffix == ".gz":
+        import gzip
+        opener = gzip.open(path, "rt", encoding="utf-8")
+    else:
+        opener = open(path)
+    with opener as f:
         return [RecordedCall(**json.loads(line)) for line in f if line.strip()]
 
 
 def _save_calls(calls: List[RecordedCall], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        for call in calls:
-            data: dict = {
-                "request": call.request,
-                "response": call.response,
-                "timestamp": call.timestamp,
-                "duration_ms": call.duration_ms,
-            }
-            if call.chunks is not None:
-                data["chunks"] = call.chunks
-            f.write(json.dumps(data) + "\n")
+    lines = []
+    for call in calls:
+        data: dict = {
+            "request": call.request,
+            "response": call.response,
+            "timestamp": call.timestamp,
+            "duration_ms": call.duration_ms,
+        }
+        if call.chunks is not None:
+            data["chunks"] = call.chunks
+        lines.append(json.dumps(data))
+
+    content = "\n".join(lines) + "\n"
+
+    if path.suffix == ".gz":
+        import gzip
+        with gzip.open(path, "wt", encoding="utf-8") as f:
+            f.write(content)
+    else:
+        # Use an adjacent lock file to prevent two pytest-xdist workers from
+        # writing the same fixture concurrently during record/auto mode.
+        lock_path = path.with_suffix(path.suffix + ".lock")
+        try:
+            import filelock
+            lock: Any = filelock.FileLock(str(lock_path), timeout=30)
+        except ImportError:
+            # filelock not installed — fall back to no-op context manager
+            from contextlib import nullcontext
+            lock = nullcontext()
+        with lock:
+            with open(path, "w") as f:
+                f.write(content)
 
 
 def _check_exists(path: Path) -> None:
+    # Also accept the compressed twin automatically: replay("foo.jsonl") works
+    # even if the file on disk is "foo.jsonl.gz".
     if not path.exists():
+        gz = path.with_suffix(path.suffix + ".gz")
+        if gz.exists():
+            return  # caller will open gz path via _load_calls
         raise FileNotFoundError(
             f"agentprobe: no fixture at '{path}'. "
             "Run with session.record(...) first to capture a session."
