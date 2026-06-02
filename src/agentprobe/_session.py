@@ -379,6 +379,45 @@ class AssertionProxy:
 
         return self
 
+    def assert_tool_call_count_per_call(self, tool_name: str, n: int) -> "AssertionProxy":
+        """Assert every iteration that called *tool_name* called it exactly *n* times.
+
+        Useful for multi-step agents where each turn must invoke a tool a fixed
+        number of times::
+
+            # Each API call that used "search" must have called it exactly once
+            probe.assert_tool_call_count_per_call("search", 1)
+        """
+        for i, call in enumerate(self._calls):
+            names = [
+                tc["function"]["name"]
+                for choice in call.response.get("choices", [])
+                for tc in (choice.get("message", {}).get("tool_calls") or [])
+            ]
+            count = names.count(tool_name)
+            if count > 0:
+                assert count == n, (
+                    f"agentprobe: call {i + 1} invoked tool '{tool_name}' {count} time(s), "
+                    f"expected {n}"
+                )
+        return self
+
+    def assert_no_tool_call_cycles(self) -> "AssertionProxy":
+        """Assert the agent never called the same tool twice in a row.
+
+        Detects the common stuck-loop pattern where an agent calls tool A,
+        gets no result, then calls tool A again::
+
+            probe.assert_no_tool_call_cycles()
+        """
+        ordered = self._tools_in_call_order()
+        for i in range(1, len(ordered)):
+            assert ordered[i] != ordered[i - 1], (
+                f"agentprobe: tool '{ordered[i]}' was called twice in a row "
+                f"(positions {i} and {i + 1})"
+            )
+        return self
+
     def assert_tool_call_order(self, *names: str) -> "AssertionProxy":
         """Assert tools were called in *names* order (allowing other calls between them).
 
@@ -1691,6 +1730,30 @@ class AnthropicAssertionProxy:
             assert has_text or has_tools, (
                 f"agentprobe: call {i + 1} returned an empty response "
                 f"(no text blocks and no tool_use blocks)"
+            )
+        return self
+
+    def assert_tool_call_count_per_call(self, tool_name: str, n: int) -> "AnthropicAssertionProxy":
+        """Assert every iteration that called *tool_name* called it exactly *n* times."""
+        for i, call in enumerate(self._calls):
+            count = sum(
+                1 for block in (call.response.get("content") or [])
+                if block.get("type") == "tool_use" and block["name"] == tool_name
+            )
+            if count > 0:
+                assert count == n, (
+                    f"agentprobe: call {i + 1} invoked tool '{tool_name}' {count} time(s), "
+                    f"expected {n}"
+                )
+        return self
+
+    def assert_no_tool_call_cycles(self) -> "AnthropicAssertionProxy":
+        """Assert the agent never called the same tool twice in a row."""
+        ordered = self._tools_in_call_order()
+        for i in range(1, len(ordered)):
+            assert ordered[i] != ordered[i - 1], (
+                f"agentprobe: tool '{ordered[i]}' was called twice in a row "
+                f"(positions {i} and {i + 1})"
             )
         return self
 

@@ -757,6 +757,143 @@ def cmd_stats_by_date(args):
                   f"{e['tokens']:,} tokens  ${e['cost']:.4f}")
 
 
+def cmd_fixtures_summarize(args):
+    """Print a one-line summary for every fixture file in a directory."""
+    from agentprobe._pricing import estimate_cost, estimate_cost_anthropic
+    directory = Path(args.directory)
+    if not directory.is_dir():
+        print(f"agentprobe: not a directory: {args.directory}", file=sys.stderr)
+        sys.exit(1)
+
+    fixtures = sorted(directory.rglob("*.jsonl")) + sorted(directory.rglob("*.jsonl.gz"))
+    if not fixtures:
+        print(f"agentprobe: no fixtures found in {args.directory}")
+        return
+
+    rows = []
+    for f in fixtures:
+        try:
+            calls = _load(str(f))
+        except Exception:
+            continue
+        meta = _load_meta(str(f))
+        recorded = meta.get("recorded_at", "")[:10] if meta else ""
+        total_in = total_out = 0
+        tools: list = []
+        models: set = set()
+        for c in calls:
+            resp = c.get("response", {})
+            usage = resp.get("usage") or {}
+            model = resp.get("model") or c.get("request", {}).get("model", "")
+            models.add(model)
+            if _is_anthropic_response(resp):
+                total_in += usage.get("input_tokens", 0) or 0
+                total_out += usage.get("output_tokens", 0) or 0
+                for block in (resp.get("content") or []):
+                    if block.get("type") == "tool_use":
+                        tools.append(block["name"])
+            else:
+                total_in += usage.get("prompt_tokens", 0) or 0
+                total_out += usage.get("completion_tokens", 0) or 0
+                for ch in resp.get("choices", []):
+                    for tc in (ch["message"].get("tool_calls") or []):
+                        tools.append(tc["function"]["name"])
+        unique_tools = sorted(set(tools))
+        rows.append({
+            "file": str(f.relative_to(directory) if f.is_relative_to(directory) else f),
+            "calls": len(calls), "in": total_in, "out": total_out,
+            "tools": ",".join(unique_tools) or "(none)",
+            "models": ",".join(sorted(models - {""})) or "?",
+            "date": recorded,
+        })
+
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2))
+    else:
+        for r in rows:
+            tools_str = f"  tools=[{r['tools']}]" if r["tools"] != "(none)" else ""
+            print(f"  {r['file']:<40} {r['calls']:>3} call(s)  "
+                  f"{r['in']:>6} in / {r['out']:>5} out  {r['date']}{tools_str}")
+
+
+def cmd_compare_score(args):
+    """Compute a structural similarity score (0–100) between two fixtures."""
+    a_calls = _load(args.fixture_a)
+    b_calls = _load(args.fixture_b)
+
+    if not a_calls and not b_calls:
+        print(json.dumps({"score": 100, "reason": "both empty"}) if getattr(args, "json", False)
+              else "agentprobe: score 100/100 (both empty)")
+        return
+
+    total_checks = 0
+    matches = 0
+
+    # Call count match
+    total_checks += 1
+    if len(a_calls) == len(b_calls):
+        matches += 1
+
+    # Per-call structural comparison
+    for i in range(min(len(a_calls), len(b_calls))):
+        ar, br = a_calls[i].get("response", {}), b_calls[i].get("response", {})
+
+        def _stop(resp):
+            if _is_anthropic_response(resp):
+                return resp.get("stop_reason")
+            ch = resp.get("choices", [])
+            return ch[0]["finish_reason"] if ch else None
+
+        def _tools(resp):
+            if _is_anthropic_response(resp):
+                return sorted(b["name"] for b in (resp.get("content") or []) if b.get("type") == "tool_use")
+            ch = resp.get("choices", [])
+            return sorted(tc["function"]["name"] for c in ch for tc in (c["message"].get("tool_calls") or []))
+
+        def _model(resp, req):
+            return resp.get("model") or req.get("model", "")
+
+        # stop_reason/finish_reason
+        total_checks += 1
+        if _stop(ar) == _stop(br):
+            matches += 1
+
+        # tools
+        total_checks += 1
+        if _tools(ar) == _tools(br):
+            matches += 1
+
+        # model
+        total_checks += 1
+        a_model = _model(ar, a_calls[i].get("request", {}))
+        b_model = _model(br, b_calls[i].get("request", {}))
+        if a_model == b_model:
+            matches += 1
+
+    score = round((matches / total_checks) * 100) if total_checks else 100
+    diff_count = total_checks - matches
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "score": score,
+            "matches": matches,
+            "total_checks": total_checks,
+            "differences": diff_count,
+        }))
+    else:
+        bar = "#" * (score // 5) + "." * (20 - score // 5)
+        print(f"agentprobe compare: {args.fixture_a}  vs  {args.fixture_b}")
+        print(f"  similarity: {score:>3}/100  [{bar}]  ({diff_count} difference(s))")
+        if score == 100:
+            print("  Fixtures are structurally identical.")
+        elif score >= 80:
+            print("  Minor differences — likely a safe refactor.")
+        elif score >= 50:
+            print("  Moderate differences — review before merging.")
+        else:
+            print("  Significant differences — fixtures may represent different agent behaviors.")
+
+
 def cmd_fixtures_orphaned(args):
     """List fixture files not referenced in any Python test file."""
     directory = Path(args.directory)
@@ -1184,6 +1321,14 @@ def main():
                         help="Human-readable side-by-side per-call comparison")
     p_diff.set_defaults(func=lambda a: cmd_diff_by_call(a) if a.by_call else (cmd_diff_json(a) if a.json else cmd_diff(a)))
 
+    p_compare = sub.add_parser("compare", help="Structural similarity score between two fixtures")
+    p_compare.add_argument("fixture_a")
+    p_compare.add_argument("fixture_b")
+    p_compare.add_argument("--score", action="store_true",
+                           help="Output similarity score (0-100) — always on, kept for ergonomics")
+    p_compare.add_argument("--json", action="store_true", help="Machine-readable JSON output")
+    p_compare.set_defaults(func=cmd_compare_score)
+
     p_list = sub.add_parser("fixtures", help="List or manage fixture files in a directory")
     p_list.add_argument("directory", nargs="?", default="tests/fixtures",
                         help="Directory to search (default: tests/fixtures)")
@@ -1192,9 +1337,12 @@ def main():
     p_list.add_argument("--by-date", action="store_true", help="Group stats by recording date")
     p_list.add_argument("--orphaned", action="store_true",
                         help="List fixture files not referenced in any test file")
+    p_list.add_argument("--summarize", action="store_true",
+                        help="Print a one-line summary (calls, tokens, tools) per fixture")
     p_list.set_defaults(func=lambda a: cmd_fixtures_clean(a) if a.clean else (
         cmd_stats_by_date(a) if a.by_date else (
-        cmd_fixtures_orphaned(a) if a.orphaned else cmd_fixtures_list(a))))
+        cmd_fixtures_orphaned(a) if a.orphaned else (
+        cmd_fixtures_summarize(a) if a.summarize else cmd_fixtures_list(a)))))
 
     p_stats = sub.add_parser("stats", help="Aggregate stats across all fixtures in a directory")
     p_stats.add_argument("directory", nargs="?", default="tests/fixtures",

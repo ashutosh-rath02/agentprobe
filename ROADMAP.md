@@ -1,6 +1,6 @@
 # agentprobe — Project Roadmap
 
-## Status: v0.14.0
+## Status: v0.15.0
 
 ---
 
@@ -74,24 +74,24 @@
 
 ---
 
-## Done (v0.14.0)
-- [x] `assert_tool_call_order`, `assert_no_empty_tool_inputs`, `assert_average_latency_under`
-- [x] `record --max-calls N`
-- [x] Fixed `_tools_in_call_order()` helper (bug: was using alphabetically sorted `tools_called`)
+## Done (v0.15.0)
+- [x] `assert_tool_call_count_per_call`, `assert_no_tool_call_cycles`
+- [x] `agentprobe fixtures --summarize` (OpenAI + Anthropic)
+- [x] `agentprobe compare <a> <b>` — structural similarity score 0–100
 
 ---
 
-## Next — v0.15.0
+## Next — v0.16.0
 
 ### High priority
-- [ ] **`agentprobe compare <fixture_a> <fixture_b> --score`** — semantic similarity score beyond structural diff
-- [ ] **`probe.assert_consistent_persona()`** — assert response style doesn't contradict a system prompt persona
-- [ ] **`probe.assert_tool_call_count_per_call(name, n)`** — per-call count for a specific tool
+- [ ] **`probe.assert_final_tool_not_called(name)`** — assert the last API call didn't invoke a specific tool (guards against unclosed tool loops)
+- [ ] **`agentprobe record --label TAG`** — embed a custom tag in `_meta` for easy fixture grouping
+- [ ] **`probe.assert_output_word_count(min, max)`** — simple length assertion on final output
 
 ### Medium priority
-- [ ] **`agentprobe fixtures --summarize`** — print human-readable summary of each fixture in a directory
-- [ ] **`messages.stream()` recording support** — `MessageStreamManager` higher-level streaming API
-- [ ] **`probe.assert_no_tool_call_cycles()`** — detect circular tool call patterns (A → B → A)
+- [ ] **`messages.stream()` recording support** — `MessageStreamManager` higher-level API
+- [ ] **`agentprobe show --stdout`** — show captured stdout from `_meta` alongside calls
+- [ ] **`probe.assert_no_pii_in_tool_inputs(patterns)`** — regex-based PII guard on tool arguments
 
 ### Lower priority
 - [ ] **`agentprobe record --watch` real file watcher** — swap polling for `watchdog`
@@ -99,6 +99,6 @@
 
 ---
 
-## Publish checklist (v0.14.0)
-- [ ] `git tag v0.14.0 && git push --tags`
+## Publish checklist (v0.15.0)
+- [ ] `git tag v0.15.0 && git push --tags`
 - [ ] GitHub release with CHANGELOG excerpt

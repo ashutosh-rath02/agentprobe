@@ -4,6 +4,20 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.15.0] — 2026-06-02
+
+### Added
+
+**AssertionProxy + AnthropicAssertionProxy**
+- `probe.assert_tool_call_count_per_call(name, n)` — for every API call that invoked *name*, assert it was called exactly *n* times (skips calls that didn't invoke it at all)
+- `probe.assert_no_tool_call_cycles()` — fails if the same tool was called twice in a row; detects the most common stuck-loop pattern
+
+**CLI**
+- `agentprobe fixtures --summarize [dir]` — prints a one-line summary per fixture (call count, token counts, tools, model, recording date); `--json` for machine-readable output; handles both OpenAI and Anthropic fixtures
+- `agentprobe compare <fixture_a> <fixture_b>` — structural similarity score (0–100) based on call count, stop_reason, tools, and model agreement per call; `--json` for structured output with `score`, `matches`, `total_checks`, `differences`
+
+---
+
 ## [0.14.0] — 2026-06-02
 
 ### Added
