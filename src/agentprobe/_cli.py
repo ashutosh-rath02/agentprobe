@@ -942,6 +942,56 @@ def cmd_compare_score(args):
             print("  Significant differences — fixtures may represent different agent behaviors.")
 
 
+def cmd_fixtures_count(args):
+    """Print the count of fixture files in a directory."""
+    directory = Path(args.directory)
+    if not directory.is_dir():
+        print(f"agentprobe: not a directory: {args.directory}", file=sys.stderr)
+        sys.exit(1)
+    fixtures = list(directory.rglob("*.jsonl")) + list(directory.rglob("*.jsonl.gz"))
+    if getattr(args, "json", False):
+        print(json.dumps({"count": len(fixtures), "directory": str(directory)}))
+    else:
+        print(f"{len(fixtures)} fixture(s) in {args.directory}")
+
+
+def cmd_fixtures_delete_old(args):
+    """Delete fixture files older than N days (requires --confirm)."""
+    from datetime import datetime, timezone, timedelta
+    directory = Path(args.directory)
+    if not directory.is_dir():
+        print(f"agentprobe: not a directory: {args.directory}", file=sys.stderr)
+        sys.exit(1)
+
+    if not getattr(args, "confirm", False):
+        print(
+            f"agentprobe: --delete-old requires --confirm to prevent accidental deletion.\n"
+            f"  Use: agentprobe fixtures --delete-old {args.delete_old} --confirm {args.directory}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    now = datetime.now(timezone.utc)
+    age_days = args.delete_old
+    fixtures = sorted(directory.rglob("*.jsonl")) + sorted(directory.rglob("*.jsonl.gz"))
+    deleted = 0
+    for f in fixtures:
+        meta = _load_meta(str(f))
+        recorded = meta.get("recorded_at", "")
+        if not recorded:
+            continue
+        try:
+            ts = datetime.fromisoformat(recorded.replace("Z", "+00:00"))
+            if (now - ts).days >= age_days:
+                f.unlink()
+                print(f"  deleted {f}")
+                deleted += 1
+        except (ValueError, OSError):
+            continue
+
+    print(f"\nagentprobe: deleted {deleted} fixture(s) older than {age_days} day(s)")
+
+
 def cmd_fixtures_by_age(args):
     """List fixture files older than N days (by _meta.recorded_at)."""
     from datetime import datetime, timezone
@@ -1463,12 +1513,20 @@ def main():
                         help="List fixtures that have this label in their _meta header")
     p_list.add_argument("--age-days", dest="age_days", type=int, metavar="N",
                         help="List fixtures older than N days (by _meta.recorded_at)")
+    p_list.add_argument("--delete-old", dest="delete_old", type=int, metavar="N",
+                        help="Delete fixtures older than N days (requires --confirm)")
+    p_list.add_argument("--confirm", action="store_true",
+                        help="Confirm destructive operations like --delete-old")
+    p_list.add_argument("--count", action="store_true",
+                        help="Print the count of fixture files")
     p_list.set_defaults(func=lambda a: cmd_fixtures_clean(a) if a.clean else (
         cmd_stats_by_date(a) if a.by_date else (
         cmd_fixtures_orphaned(a) if a.orphaned else (
         cmd_fixtures_summarize(a) if a.summarize else (
         cmd_fixtures_by_label(a) if a.label else (
-        cmd_fixtures_by_age(a) if a.age_days else cmd_fixtures_list(a)))))))
+        cmd_fixtures_by_age(a) if a.age_days else (
+        cmd_fixtures_delete_old(a) if a.delete_old is not None else (
+        cmd_fixtures_count(a) if a.count else cmd_fixtures_list(a)))))))))
 
     p_stats = sub.add_parser("stats", help="Aggregate stats across all fixtures in a directory")
     p_stats.add_argument("directory", nargs="?", default="tests/fixtures",

@@ -1,6 +1,6 @@
 # agentprobe — Project Roadmap
 
-## Status: v0.19.0
+## Status: v0.20.0
 
 ---
 
@@ -74,23 +74,23 @@
 
 ---
 
-## Done (v0.19.0)
-- [x] `assert_tool_never_called_with`, `assert_response_format`, `assert_prompt_growth_bounded`
-- [x] `show --calls N`
+## Done (v0.20.0)
+- [x] `assert_no_empty_system_prompt`, `assert_tool_inputs_unique`, `assert_output_not_empty`
+- [x] `fixtures --count`, `fixtures --delete-old N --confirm`
 
 ---
 
-## Next — v0.20.0
+## Next — v0.21.0
 
 ### High priority
-- [ ] **`agentprobe fixtures --delete-old N --confirm`** — delete fixtures older than N days (requires explicit `--confirm`)
-- [ ] **`probe.assert_no_empty_system_prompt()`** — assert every call with a system message has non-empty content
-- [ ] **`probe.assert_tool_inputs_unique(name)`** — assert no two calls to *name* used identical inputs (deduplication signal)
+- [ ] **`probe.assert_response_latency_percentile(p, ms)`** — p-th percentile of recorded durations under limit
+- [ ] **`agentprobe replay --provider anthropic`** — replay Anthropic fixtures from CLI (already works, just needs `--provider` default handling)
+- [ ] **`probe.assert_all_responses_under_tokens(n)`** — per-response token cap (complement to session-total `assert_max_tokens`)
 
 ### Medium priority
 - [ ] **`messages.stream()` recording support** — `MessageStreamManager` higher-level API
-- [ ] **`probe.assert_output_not_empty()`** — assert final output is non-empty/non-whitespace
-- [ ] **`agentprobe fixtures --count`** — quick fixture count without listing
+- [ ] **`probe.assert_tool_arg_type(name, key, expected_type)`** — type-check a specific key in tool inputs (e.g. `"int"`, `"str"`, `"bool"`)
+- [ ] **`agentprobe show --highlight PATTERN`** — highlight regex matches in output text
 
 ### Lower priority
 - [ ] **`agentprobe record --watch` real file watcher** — swap polling for `watchdog`
@@ -98,6 +98,6 @@
 
 ---
 
-## Publish checklist (v0.19.0)
-- [ ] `git tag v0.19.0 && git push --tags`
+## Publish checklist (v0.20.0)
+- [ ] `git tag v0.20.0 && git push --tags`
 - [ ] GitHub release with CHANGELOG excerpt

@@ -379,6 +379,58 @@ class AssertionProxy:
 
         return self
 
+    def assert_no_empty_system_prompt(self) -> "AssertionProxy":
+        """Assert every call that included a system message had non-empty content.
+
+        Catches agents where the system prompt is set to ``""`` or ``None``::
+
+            probe.assert_no_empty_system_prompt()
+        """
+        for i, call in enumerate(self._calls):
+            for msg in (call.request.get("messages") or []):
+                if msg.get("role") == "system":
+                    content = msg.get("content") or ""
+                    if isinstance(content, list):
+                        has_text = any(
+                            p.get("text", "").strip() if isinstance(p, dict) else str(p).strip()
+                            for p in content
+                        )
+                    else:
+                        has_text = bool(str(content).strip())
+                    assert has_text, (
+                        f"agentprobe: call {i + 1} has an empty system message"
+                    )
+        return self
+
+    def assert_tool_inputs_unique(self, tool_name: str) -> "AssertionProxy":
+        """Assert no two calls to *tool_name* used identical serialized inputs.
+
+        Detects redundant/repeated tool invocations across the session::
+
+            probe.assert_tool_inputs_unique("search")
+        """
+        inputs = self._tool_inputs(tool_name)
+        serialized = [json.dumps(inp, sort_keys=True) for inp in inputs]
+        seen: set = set()
+        for i, s in enumerate(serialized):
+            assert s not in seen, (
+                f"agentprobe: tool '{tool_name}' call {i + 1} duplicates a previous input: "
+                f"{inputs[i]}"
+            )
+            seen.add(s)
+        return self
+
+    def assert_output_not_empty(self) -> "AssertionProxy":
+        """Assert the final text output is non-empty and non-whitespace::
+
+            probe.assert_output_not_empty()
+        """
+        out = self.final_output
+        assert out and out.strip(), (
+            "agentprobe: final output is empty or whitespace-only"
+        )
+        return self
+
     def assert_tool_never_called_with(self, tool_name: str,
                                       **forbidden_input: Any) -> "AssertionProxy":
         """Assert *tool_name* was never called with all of *forbidden_input* key/values.
@@ -1984,6 +2036,50 @@ class AnthropicAssertionProxy:
                 f"agentprobe: call {i + 1} returned an empty response "
                 f"(no text blocks and no tool_use blocks)"
             )
+        return self
+
+    def assert_no_empty_system_prompt(self) -> "AnthropicAssertionProxy":
+        """Assert every call that included a system prompt had non-empty content."""
+        for i, call in enumerate(self._calls):
+            sys_prompt = call.request.get("system")
+            if sys_prompt is not None:
+                if isinstance(sys_prompt, list):
+                    has_text = any(
+                        p.get("text", "").strip() if isinstance(p, dict) else str(p).strip()
+                        for p in sys_prompt
+                    )
+                else:
+                    has_text = bool(str(sys_prompt).strip())
+                assert has_text, (
+                    f"agentprobe: call {i + 1} has an empty system prompt"
+                )
+            for msg in (call.request.get("messages") or []):
+                if msg.get("role") == "system":
+                    content = msg.get("content") or ""
+                    assert bool(str(content).strip()), (
+                        f"agentprobe: call {i + 1} has an empty system message"
+                    )
+        return self
+
+    def assert_tool_inputs_unique(self, tool_name: str) -> "AnthropicAssertionProxy":
+        """Assert no two calls to *tool_name* used identical inputs."""
+        inputs = self._tool_inputs(tool_name)
+        serialized = [json.dumps(inp, sort_keys=True) for inp in inputs]
+        seen: set = set()
+        for i, s in enumerate(serialized):
+            assert s not in seen, (
+                f"agentprobe: tool '{tool_name}' call {i + 1} duplicates a previous input: "
+                f"{inputs[i]}"
+            )
+            seen.add(s)
+        return self
+
+    def assert_output_not_empty(self) -> "AnthropicAssertionProxy":
+        """Assert the final text output is non-empty and non-whitespace."""
+        out = self.final_output
+        assert out and out.strip(), (
+            "agentprobe: final output is empty or whitespace-only"
+        )
         return self
 
     def assert_tool_never_called_with(self, tool_name: str,

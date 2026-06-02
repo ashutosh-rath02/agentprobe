@@ -4,6 +4,21 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.20.0] — 2026-06-02
+
+### Added
+
+**AssertionProxy + AnthropicAssertionProxy**
+- `probe.assert_no_empty_system_prompt()` — fails if any call with a system message/prompt has empty content; catches misconfigured agents that set `system=""` or `None`
+- `probe.assert_tool_inputs_unique(name)` — fails if any two calls to *name* used identical serialized inputs; detects redundant invocations
+- `probe.assert_output_not_empty()` — fails if the final output is `None`, empty, or whitespace-only
+
+**CLI**
+- `agentprobe fixtures --count [dir]` — prints a count of fixture files without listing them; `--json` for structured output
+- `agentprobe fixtures --delete-old N --confirm [dir]` — deletes fixtures whose `_meta.recorded_at` is at least N days old; requires `--confirm` to prevent accidental deletion
+
+---
+
 ## [0.19.0] — 2026-06-02
 
 ### Added
