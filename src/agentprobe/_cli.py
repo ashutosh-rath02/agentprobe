@@ -60,13 +60,15 @@ def cmd_show_json(args):
         resp = call.get("response", {})
         usage = resp.get("usage") or {}
         choices = resp.get("choices", [])
+        chunks = call.get("chunks")
         entry = {
             "model": call.get("request", {}).get("model"),
             "finish_reason": choices[0]["finish_reason"] if choices else None,
             "prompt_tokens": usage.get("prompt_tokens"),
             "completion_tokens": usage.get("completion_tokens"),
             "duration_ms": call.get("duration_ms"),
-            "streaming": bool(call.get("chunks")),
+            "streaming": bool(chunks),
+            "chunk_count": len(chunks) if chunks else None,
             "tools_called": [
                 tc["function"]["name"]
                 for ch in choices
@@ -134,6 +136,98 @@ def cmd_diff(args):
     else:
         print(f"\n{diffs} difference(s) found")
         sys.exit(1)
+
+
+def cmd_diff_json(args):
+    """Machine-readable JSON diff between two fixtures."""
+    a_calls = _load(args.fixture_a)
+    b_calls = _load(args.fixture_b)
+    differences = []
+
+    if len(a_calls) != len(b_calls):
+        differences.append({
+            "type": "call_count",
+            "a": len(a_calls),
+            "b": len(b_calls),
+        })
+
+    for i in range(max(len(a_calls), len(b_calls))):
+        a = a_calls[i] if i < len(a_calls) else None
+        b = b_calls[i] if i < len(b_calls) else None
+        if a is None or b is None:
+            differences.append({"call": i + 1, "type": "missing", "present_in": "b" if a is None else "a"})
+            continue
+
+        a_choices = a.get("response", {}).get("choices", [])
+        b_choices = b.get("response", {}).get("choices", [])
+
+        a_stop = a_choices[0]["finish_reason"] if a_choices else None
+        b_stop = b_choices[0]["finish_reason"] if b_choices else None
+        if a_stop != b_stop:
+            differences.append({"call": i + 1, "type": "finish_reason", "a": a_stop, "b": b_stop})
+
+        a_tools = [tc["function"]["name"] for ch in a_choices for tc in (ch["message"].get("tool_calls") or [])]
+        b_tools = [tc["function"]["name"] for ch in b_choices for tc in (ch["message"].get("tool_calls") or [])]
+        if a_tools != b_tools:
+            differences.append({"call": i + 1, "type": "tools", "a": a_tools, "b": b_tools})
+
+        a_in = (a.get("response", {}).get("usage") or {}).get("prompt_tokens", 0)
+        b_in = (b.get("response", {}).get("usage") or {}).get("prompt_tokens", 0)
+        if a_in != b_in:
+            differences.append({"call": i + 1, "type": "prompt_tokens", "a": a_in, "b": b_in})
+
+    result = {
+        "fixture_a": args.fixture_a,
+        "fixture_b": args.fixture_b,
+        "calls_a": len(a_calls),
+        "calls_b": len(b_calls),
+        "identical": len(differences) == 0,
+        "differences": differences,
+    }
+    print(json.dumps(result, indent=2))
+    if differences:
+        sys.exit(1)
+
+
+def cmd_fixtures_list(args):
+    """List all .jsonl fixture files under a directory with summary stats."""
+    import os
+    directory = Path(args.directory)
+    if not directory.is_dir():
+        print(f"agentprobe: not a directory: {args.directory}", file=sys.stderr)
+        sys.exit(1)
+
+    fixtures = sorted(directory.rglob("*.jsonl"))
+    if not fixtures:
+        print(f"agentprobe: no .jsonl files found in {args.directory}")
+        return
+
+    if getattr(args, "json", False):
+        entries = []
+        for f in fixtures:
+            try:
+                calls = _load(str(f))
+                streaming = sum(1 for c in calls if c.get("chunks"))
+                entries.append({
+                    "path": str(f),
+                    "calls": len(calls),
+                    "streaming_calls": streaming,
+                    "size_bytes": f.stat().st_size,
+                })
+            except Exception as e:
+                entries.append({"path": str(f), "error": str(e)})
+        print(json.dumps(entries, indent=2))
+    else:
+        print(f"Fixtures in {args.directory}:\n")
+        for f in fixtures:
+            try:
+                calls = _load(str(f))
+                streaming = sum(1 for c in calls if c.get("chunks"))
+                stream_note = f"  ({streaming} streaming)" if streaming else ""
+                print(f"  {f}  [{len(calls)} call(s){stream_note}]")
+            except Exception:
+                print(f"  {f}  [INVALID]")
+        print(f"\n{len(fixtures)} fixture(s) found")
 
 
 def cmd_validate(args):
@@ -273,7 +367,14 @@ def main():
     p_diff = sub.add_parser("diff", help="Compare two session fixtures")
     p_diff.add_argument("fixture_a")
     p_diff.add_argument("fixture_b")
-    p_diff.set_defaults(func=cmd_diff)
+    p_diff.add_argument("--json", action="store_true", help="Output as machine-readable JSON")
+    p_diff.set_defaults(func=lambda a: cmd_diff_json(a) if a.json else cmd_diff(a))
+
+    p_list = sub.add_parser("fixtures", help="List fixture files in a directory")
+    p_list.add_argument("directory", nargs="?", default="tests/fixtures",
+                        help="Directory to search (default: tests/fixtures)")
+    p_list.add_argument("--json", action="store_true", help="Output as machine-readable JSON")
+    p_list.set_defaults(func=cmd_fixtures_list)
 
     p_record = sub.add_parser(
         "record",

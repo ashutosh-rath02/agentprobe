@@ -21,6 +21,21 @@ def pytest_configure(config):
     except ValueError:
         pass  # option not registered (e.g. when called from programmatic config)
 
+    # Warn if pytest-xdist is active — class-level Session patching is not
+    # safe for parallel workers. Use MultiSession (instance-level) instead.
+    try:
+        worker_id = config.workerinput.get("workerid")  # type: ignore[attr-defined]
+    except AttributeError:
+        worker_id = None
+    if worker_id is not None:
+        import warnings
+        warnings.warn(
+            "agentprobe: pytest-xdist parallel workers detected. "
+            "Session (class-level patching) is NOT thread-safe across workers. "
+            "Use MultiSession with per-client patching for parallel tests.",
+            stacklevel=2,
+        )
+
 
 @pytest.fixture
 def agentprobe():

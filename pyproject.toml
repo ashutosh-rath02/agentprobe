@@ -55,6 +55,7 @@ agentprobe = "agentprobe._cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agentprobe"]
+include = ["src/agentprobe/py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from unittest.mock import patch
 
+import openai.resources.chat.completions
+
 from ._interceptor import (
     _assemble_from_chunks,
     MockAsyncStream,
@@ -157,7 +159,36 @@ class AssertionProxy:
         """Assert the estimated cost is at most *usd* dollars."""
         actual = self.estimated_cost_usd
         assert actual <= usd, (
-            f"agentprobe: expected cost ≤ ${usd:.4f}, got ${actual:.4f}"
+            f"agentprobe: expected cost <= ${usd:.4f}, got ${actual:.4f}"
+        )
+        return self
+
+    # ── Timing assertions ─────────────────────────────────────────────────
+
+    def assert_max_duration_ms(self, ms: float) -> "AssertionProxy":
+        """Assert the total wall-clock time for all recorded calls is at most *ms* ms."""
+        actual = self.total_duration_ms
+        assert actual <= ms, (
+            f"agentprobe: expected total duration <= {ms:.0f}ms, got {actual:.0f}ms"
+        )
+        return self
+
+    # ── Model assertions ──────────────────────────────────────────────────
+
+    def assert_model_used(self, model: str) -> "AssertionProxy":
+        """Assert every call in the session used *model*."""
+        for i, call in enumerate(self._calls):
+            actual = call.request.get("model", "")
+            assert actual == model, (
+                f"agentprobe: call {i+1} used model '{actual}', expected '{model}'"
+            )
+        return self
+
+    def assert_no_tool_calls(self) -> "AssertionProxy":
+        """Assert no tool calls were made in the entire session."""
+        names = self._all_tool_names()
+        assert not names, (
+            f"agentprobe: expected no tool calls but got: {sorted(names)}"
         )
         return self
 
@@ -170,6 +201,24 @@ class AssertionProxy:
     @property
     def tools_called(self) -> List[str]:
         return sorted(self._all_tool_names())
+
+    @property
+    def total_duration_ms(self) -> float:
+        """Sum of recorded duration_ms across all calls (0.0 for replay-only sessions)."""
+        return sum(call.duration_ms or 0.0 for call in self._calls)
+
+    @property
+    def call_log(self) -> List[Dict[str, Any]]:
+        """Full request/response pairs as plain dicts, suitable for custom assertions."""
+        return [
+            {"request": call.request, "response": call.response}
+            for call in self._calls
+        ]
+
+    @property
+    def models_used(self) -> List[str]:
+        """Ordered list of model names used across all calls."""
+        return [call.request.get("model", "") for call in self._calls]
 
     @property
     def final_output(self) -> Optional[str]:
@@ -310,6 +359,47 @@ class Session:
         else:
             with self.record(path) as proxy:
                 yield proxy
+
+    @contextmanager
+    def inject(self, *responses):
+        """Replay an explicit sequence of response dicts (or ChatCompletion objects).
+
+        Useful for quick unit tests where you don't want a fixture file on disk::
+
+            resp_dict = {"id": "chatcmpl-x", "object": "chat.completion", ...}
+            with session.inject(resp_dict) as probe:
+                result = my_agent(client)
+            probe.assert_output_contains("hello")
+
+        Each positional argument is one API response, consumed in order.
+        Pass a plain dict (validated via ChatCompletion.model_validate) or an
+        already-constructed ChatCompletion object.
+        """
+        calls: List[RecordedCall] = []
+        for resp in responses:
+            if isinstance(resp, dict):
+                validated = deserialize_response(resp)
+                calls.append(RecordedCall(request={}, response=validated.model_dump()))
+            else:
+                calls.append(RecordedCall(request={}, response=resp.model_dump()))
+        with replaying_context(calls):
+            yield AssertionProxy(calls)
+
+    @contextmanager
+    def inject_error(self, exception: Exception):
+        """Make the next API call raise *exception* instead of returning a response.
+
+        Useful for testing agent error-handling paths without a real fixture::
+
+            with session.inject_error(openai.RateLimitError(...)) as probe:
+                with pytest.raises(openai.RateLimitError):
+                    my_agent(client)
+        """
+        def patched(self_inner, **kwargs):
+            raise exception
+
+        with patch.object(openai.resources.chat.completions.Completions, "create", patched):
+            yield
 
     # ── Async ─────────────────────────────────────────────────────────────
 

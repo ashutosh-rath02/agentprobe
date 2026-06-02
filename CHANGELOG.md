@@ -4,6 +4,40 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.3.0] — 2026-06-02
+
+### Added
+
+**AssertionProxy extensions**
+- `probe.assert_model_used(model)` — assert every call used the specified model
+- `probe.assert_no_tool_calls()` — explicit assertion that no tools were invoked
+- `probe.assert_max_duration_ms(ms)` — wall-clock timing assertion
+- `probe.total_duration_ms` — sum of recorded durations across all calls
+- `probe.call_log` — list of `{"request": ..., "response": ...}` dicts for custom assertions
+- `probe.models_used` — ordered list of model names across all calls
+
+**Session enhancements**
+- `Session.inject(*responses)` — ad-hoc replay of explicit response dicts or Pydantic objects without a fixture file on disk; useful for quick unit tests
+- `Session.inject_error(exception)` — make the next API call raise an exception; for testing agent error-handling paths
+
+**CLI additions**
+- `agentprobe diff --json` — machine-readable diff output
+- `agentprobe fixtures [dir]` — list all `.jsonl` fixtures in a directory with call counts and streaming stats; `--json` for machine-readable output
+- `agentprobe show --json` now includes `chunk_count` field for streaming calls
+
+**Infrastructure**
+- `py.typed` marker (PEP 561) — enables mypy/pyright type checking for library consumers
+- pytest-xdist detection warning — warns when parallel workers are active and `Session` (class-level patching) is in use; recommends `MultiSession` instead
+
+### Fixed
+- `assert_max_cost` error message used Unicode `≤` causing cp1252 crash on Windows; replaced with `<=`
+
+---
+
+All notable changes to `pytest-agentprobe` are documented here.
+
+---
+
 ## [0.2.0] — 2026-06-02
 
 ### Added
