@@ -321,7 +321,12 @@ def cmd_init(args):
 
 
 def cmd_record(args):
-    """Run a Python script and capture all OpenAI chat.completions calls to a JSONL fixture."""
+    """Run a Python script and capture all OpenAI chat.completions calls to a JSONL fixture.
+
+    Works for both sync scripts and async scripts that use asyncio.run().
+    The script is executed in-process via runpy so the OpenAI patches are active
+    before any import inside the script runs.
+    """
     import runpy
     import time
     from unittest.mock import patch
@@ -341,7 +346,8 @@ def cmd_record(args):
     output = Path(args.output)
     calls: list = []
 
-    # recording_context handles sync; we also patch async so async agents work.
+    # Patch sync completions via recording_context and async completions manually.
+    # Both patches share the same `calls` list so ordering is preserved.
     orig_async = openai.resources.chat.completions.AsyncCompletions.create
 
     async def _async_patch(self, **kwargs):
@@ -365,15 +371,23 @@ def cmd_record(args):
         ))
         return resp
 
+    # Detect whether the script is async (contains 'asyncio.run' or 'async def main').
+    script_source = script.read_text()
+    is_async = "asyncio.run(" in script_source or "async def main" in script_source
+
     with recording_context(calls):
         with patch.object(openai.resources.chat.completions.AsyncCompletions, "create", _async_patch):
             try:
+                # For both sync and async scripts: run directly.
+                # Async scripts call asyncio.run() themselves; the class-level
+                # patches are already active so calls inside that loop are captured.
                 runpy.run_path(str(script), run_name="__main__")
             except SystemExit:
                 pass
 
     _save_calls(calls, output)
-    print(f"agentprobe: recorded {len(calls)} call(s) to {output}")
+    async_note = " (async script)" if is_async else ""
+    print(f"agentprobe: recorded {len(calls)} call(s) to {output}{async_note}")
 
 
 def main():
