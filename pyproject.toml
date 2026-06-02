@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pytest-agentprobe"
+version = "0.1.0"
+description = "pytest-compatible test harness for AI agents — deterministic record & replay for Anthropic Claude"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = [
+    "openai>=1.0.0",
+    "pytest>=7.0",
+]
+keywords = [
+    "pytest", "testing", "ai", "agents", "llm", "anthropic", "claude",
+    "replay", "record", "harness",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.optional-dependencies]
+async = [
+    "pytest-asyncio>=0.23",
+]
+dev = [
+    "hatch",
+    "pytest-asyncio>=0.23",
+]
+
+[project.urls]
+Homepage = "https://github.com/ashutosh-rath02/agentprobe"
+Repository = "https://github.com/ashutosh-rath02/agentprobe"
+"Bug Tracker" = "https://github.com/ashutosh-rath02/agentprobe/issues"
+
+[project.entry-points."pytest11"]
+agentprobe = "agentprobe.plugin"
+
+[project.scripts]
+agentprobe = "agentprobe._cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentprobe"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
