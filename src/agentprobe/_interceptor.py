@@ -155,6 +155,33 @@ def replaying_context(calls: List[RecordedCall]):
             )
         call = calls[index[0]]
         index[0] += 1
+        # Capture the actual kwargs so messages_sent reflects what was passed.
+        call.request = serialize_request(kwargs)
+        if kwargs.get("stream"):
+            if call.chunks is None:
+                raise RuntimeError(
+                    "agentprobe: agent used stream=True but this fixture was recorded "
+                    "without streaming. Re-record with stream=True."
+                )
+            return MockStream([deserialize_chunk(c) for c in call.chunks])
+        return deserialize_response(call.response)
+
+    with patch.object(openai.resources.chat.completions.Completions, "create", patched):
+        yield
+
+
+@contextmanager
+def _strict_replaying_context(calls: List[RecordedCall], index: List[int]):
+    """Like replaying_context but shares the caller's index list for strict-mode tracking."""
+    def patched(self, **kwargs):
+        if index[0] >= len(calls):
+            raise RuntimeError(
+                f"agentprobe: replay exhausted — fixture has {len(calls)} call(s) "
+                f"but the agent made more. Re-record or update the fixture."
+            )
+        call = calls[index[0]]
+        index[0] += 1
+        call.request = serialize_request(kwargs)
         if kwargs.get("stream"):
             if call.chunks is None:
                 raise RuntimeError(
@@ -211,6 +238,7 @@ async def async_replaying_context(calls: List[RecordedCall]):
             )
         call = calls[index[0]]
         index[0] += 1
+        call.request = serialize_request(kwargs)
         if kwargs.get("stream"):
             if call.chunks is None:
                 raise RuntimeError(

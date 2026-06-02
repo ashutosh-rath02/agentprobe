@@ -77,8 +77,8 @@ def test_streaming_validate_with_usage_fixture():
 def test_streaming_show_json_reports_usage():
     r = run_cli("show", "--json", STREAMING_USAGE_FIXTURE)
     data = json.loads(r.stdout)
-    assert data[0]["prompt_tokens"] == 10
-    assert data[0]["completion_tokens"] == 5
+    assert data["calls"][0]["prompt_tokens"] == 10
+    assert data["calls"][0]["completion_tokens"] == 5
 
 
 # ── agentprobe record async script detection ──────────────────────────────────

@@ -4,6 +4,33 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.5.0] — 2026-06-02
+
+### Added
+
+**AssertionProxy**
+- `assert_output_matches(pattern)` — regex assertion on final output (`re.search`)
+- `assert_tool_sequence(*names)` — assert exact ordered sequence of tools called
+- `assert_finish_reason_all(reason)` — every call must end with the given finish reason
+- `dump_fixture(path)` — save the current session to a JSONL fixture file (useful for persisting `inject()` sessions)
+- `messages_sent` property — list of messages passed per API call; now captures **actual** kwargs passed during replay/inject, not just stored fixture values
+- `duration_percentile(p)` — p-th percentile of per-call `duration_ms` (0–100)
+
+**Session**
+- `Session.replay(path, strict=True)` — raises `AssertionError` on exit if the agent did not consume all fixture calls; detects under-consuming agents
+- `Session.auto()` — xdist-safe via `FileLock` coordination: if another worker holds the record lock, waits and then replays
+- `_save_calls` now uses atomic temp-file + rename instead of `FileLock` — eliminates the deadlock between `auto()`'s coordination lock and `_save_calls`'s write-safety; fixtures are never seen in a partially-written state
+
+**CLI**
+- `agentprobe record --env FILE` — load a `.env` file before running the script (`setdefault` semantics; doesn't overwrite already-set vars)
+- `agentprobe show --json` output restructured to `{"calls": [...], "summary": {...}}` with `total_calls`, `total_tokens`, `total_duration_ms`, `estimated_total_cost_usd`, `streaming_calls`
+- `agentprobe validate` linting: warns (WARN, exit 0) on fixture lines missing `duration_ms` or `request.model`
+
+### Fixed
+- `replaying_context` (and `_make_sync_replayer`, `_make_async_replayer`) now update `call.request` with actual kwargs on each replay, so `probe.messages_sent` correctly reflects what was passed in the test rather than stored fixture values
+
+---
+
 ## [0.4.0] — 2026-06-02
 
 ### Added

@@ -55,20 +55,35 @@ def cmd_show(args):
 
 def cmd_show_json(args):
     calls = _load(args.fixture)
+    from agentprobe._pricing import estimate_cost
     out = []
+    total_prompt = 0
+    total_completion = 0
+    total_duration = 0.0
+    total_cost = 0.0
     for call in calls:
         resp = call.get("response", {})
         usage = resp.get("usage") or {}
         choices = resp.get("choices", [])
         chunks = call.get("chunks")
+        prompt_tok = usage.get("prompt_tokens") or 0
+        completion_tok = usage.get("completion_tokens") or 0
+        dur = call.get("duration_ms") or 0.0
+        model = call.get("request", {}).get("model") or ""
+        cost = estimate_cost(model, prompt_tok, completion_tok)
+        total_prompt += prompt_tok
+        total_completion += completion_tok
+        total_duration += dur
+        total_cost += cost
         entry = {
-            "model": call.get("request", {}).get("model"),
+            "model": model or None,
             "finish_reason": choices[0]["finish_reason"] if choices else None,
-            "prompt_tokens": usage.get("prompt_tokens"),
-            "completion_tokens": usage.get("completion_tokens"),
+            "prompt_tokens": prompt_tok or None,
+            "completion_tokens": completion_tok or None,
             "duration_ms": call.get("duration_ms"),
             "streaming": bool(chunks),
             "chunk_count": len(chunks) if chunks else None,
+            "estimated_cost_usd": cost if cost else None,
             "tools_called": [
                 tc["function"]["name"]
                 for ch in choices
@@ -80,7 +95,19 @@ def cmd_show_json(args):
             ),
         }
         out.append(entry)
-    print(json.dumps(out, indent=2))
+    result = {
+        "calls": out,
+        "summary": {
+            "total_calls": len(out),
+            "total_prompt_tokens": total_prompt,
+            "total_completion_tokens": total_completion,
+            "total_tokens": total_prompt + total_completion,
+            "total_duration_ms": total_duration,
+            "estimated_total_cost_usd": round(total_cost, 8),
+            "streaming_calls": sum(1 for e in out if e["streaming"]),
+        },
+    }
+    print(json.dumps(result, indent=2))
 
 
 def cmd_diff(args):
@@ -291,8 +318,24 @@ def cmd_validate(args):
         print(f"\nagentprobe: {len(errors)} error(s) in {args.fixture}", file=sys.stderr)
         sys.exit(1)
 
+    # Lint: soft warnings (don't fail)
+    warnings = []
+    for i, line in enumerate(lines, 1):
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if data.get("duration_ms") is None:
+            warnings.append(f"line {i}: no duration_ms (recorded without timing — replay-only fixture)")
+        if not data.get("request", {}).get("model"):
+            warnings.append(f"line {i}: request has no model field")
+
+    for w in warnings:
+        print(f"  WARN: {w}")
+
     streaming = sum(1 for d in [json.loads(l) for l in lines] if d.get("chunks"))
-    print(f"agentprobe: {args.fixture} OK  ({len(lines)} call(s), {streaming} streaming)")
+    status = f"OK ({len(warnings)} warning(s))" if warnings else "OK"
+    print(f"agentprobe: {args.fixture} {status}  ({len(lines)} call(s), {streaming} streaming)")
 
 
 def cmd_init(args):
@@ -342,6 +385,21 @@ def cmd_record(args):
     if not script.exists():
         print(f"agentprobe: script not found: {args.script}", file=sys.stderr)
         sys.exit(1)
+
+    # Load .env file if --env was specified
+    env_file = getattr(args, "env", None)
+    if env_file:
+        env_path = Path(env_file)
+        if not env_path.exists():
+            print(f"agentprobe: env file not found: {env_file}", file=sys.stderr)
+            sys.exit(1)
+        import os
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip())
 
     output = Path(args.output)
     calls: list = []
@@ -424,6 +482,11 @@ def main():
         nargs="?",
         default="agentprobe_session.jsonl",
         help="Output JSONL path (default: agentprobe_session.jsonl)",
+    )
+    p_record.add_argument(
+        "--env",
+        metavar="FILE",
+        help="Load environment variables from FILE before running the script",
     )
     p_record.set_defaults(func=cmd_record)
 

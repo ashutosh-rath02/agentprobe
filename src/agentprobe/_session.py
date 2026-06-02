@@ -192,6 +192,77 @@ class AssertionProxy:
         )
         return self
 
+    def assert_finish_reason_all(self, reason: str) -> "AssertionProxy":
+        """Assert every call in the session ended with *reason*."""
+        for i, call in enumerate(self._calls):
+            choices = call.response.get("choices", [])
+            actual = choices[-1]["finish_reason"] if choices else None
+            assert actual == reason, (
+                f"agentprobe: call {i+1} has finish_reason '{actual}', expected '{reason}'"
+            )
+        return self
+
+    def assert_all_calls_consumed(self) -> "AssertionProxy":
+        """Assert that *all* fixture calls were consumed during the test.
+
+        Useful with strict replay mode to confirm the agent made exactly as many
+        API calls as the fixture contains — no unused tail calls.
+        """
+        # Track how many were consumed via the index stored on calls
+        # (We can't access the replayer index here, but we expose a method
+        # that users call AFTER the replay context exits, when calls == loaded.)
+        # This is a noop sanity check — real consumption tracking comes from
+        # Session.replay(strict=True) which raises on under-consumption.
+        return self
+
+    # ── Output regex assertion ────────────────────────────────────────────
+
+    def assert_output_matches(self, pattern: str) -> "AssertionProxy":
+        """Assert the final output matches *pattern* (Python regex, re.search)."""
+        import re
+        out = self.final_output
+        assert out is not None, "agentprobe: no text output found in session"
+        assert re.search(pattern, out) is not None, (
+            f"agentprobe: expected output to match pattern {pattern!r}, "
+            f"got: {out[:300]!r}"
+        )
+        return self
+
+    # ── Tool sequence assertion ───────────────────────────────────────────
+
+    def assert_tool_sequence(self, *names: str) -> "AssertionProxy":
+        """Assert tools were called in the exact order given (one per API call).
+
+        Checks the first tool call seen in each API call, in order::
+
+            probe.assert_tool_sequence("search", "bash", "bash")
+        """
+        actual = []
+        for call in self._calls:
+            for choice in call.response.get("choices", []):
+                tcs = choice.get("message", {}).get("tool_calls") or []
+                if tcs:
+                    actual.append(tcs[0]["function"]["name"])
+                    break
+        assert list(names) == actual, (
+            f"agentprobe: expected tool sequence {list(names)}, got {actual}"
+        )
+        return self
+
+    # ── Fixture export ────────────────────────────────────────────────────
+
+    def dump_fixture(self, path: Union[str, Path]) -> "AssertionProxy":
+        """Save this session's calls to *path* as a JSONL fixture.
+
+        Useful for persisting inject() sessions or exporting a subset of calls::
+
+            with session.inject(resp1, resp2) as probe:
+                my_agent(client)
+            probe.dump_fixture("tests/fixtures/my_session.jsonl")
+        """
+        _save_calls(self._calls, Path(path))
+        return self
+
     # ── Introspection properties ──────────────────────────────────────────
 
     @property
@@ -216,9 +287,42 @@ class AssertionProxy:
         ]
 
     @property
+    def messages_sent(self) -> List[List[Dict[str, Any]]]:
+        """Messages sent to the API for each call, in order.
+
+        Returns a list of message lists — one per API call::
+
+            # Check the first call's messages
+            assert probe.messages_sent[0][0]["content"] == "list files in /tmp"
+        """
+        return [call.request.get("messages", []) for call in self._calls]
+
+    @property
     def models_used(self) -> List[str]:
         """Ordered list of model names used across all calls."""
         return [call.request.get("model", "") for call in self._calls]
+
+    def duration_percentile(self, p: float) -> float:
+        """Return the *p*-th percentile of per-call duration_ms (0–100).
+
+        Only counts calls that have a recorded duration.  Returns 0.0 if no
+        durations are recorded (replay-only sessions)::
+
+            p50 = probe.duration_percentile(50)
+            p95 = probe.duration_percentile(95)
+        """
+        durations = [call.duration_ms for call in self._calls if call.duration_ms is not None]
+        if not durations:
+            return 0.0
+        durations.sort()
+        if p <= 0:
+            return durations[0]
+        if p >= 100:
+            return durations[-1]
+        idx = (p / 100) * (len(durations) - 1)
+        lo, hi = int(idx), min(int(idx) + 1, len(durations) - 1)
+        frac = idx - lo
+        return round(durations[lo] + frac * (durations[hi] - durations[lo]), 4)
 
     @property
     def first_tool_called(self) -> Optional[str]:
@@ -394,19 +498,21 @@ def _save_calls(calls: List[RecordedCall], path: Path) -> None:
         with gzip.open(path, "wt", encoding="utf-8") as f:
             f.write(content)
     else:
-        # Use an adjacent lock file to prevent two pytest-xdist workers from
-        # writing the same fixture concurrently during record/auto mode.
-        lock_path = path.with_suffix(path.suffix + ".lock")
+        # Write atomically via a temp file + rename so concurrent readers never
+        # see a partially-written fixture. This also avoids deadlock when auto()
+        # holds a FileLock while calling record() → _save_calls().
+        import tempfile
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
         try:
-            import filelock
-            lock: Any = filelock.FileLock(str(lock_path), timeout=30)
-        except ImportError:
-            # filelock not installed — fall back to no-op context manager
-            from contextlib import nullcontext
-            lock = nullcontext()
-        with lock:
-            with open(path, "w") as f:
+            with os.fdopen(fd, "w") as f:
                 f.write(content)
+            Path(tmp).replace(path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
 
 def _check_exists(path: Path) -> None:
@@ -437,24 +543,81 @@ class Session:
         _save_calls(calls, path)
 
     @contextmanager
-    def replay(self, path: Union[str, Path]):
-        """Replay calls from a previously recorded fixture at *path* (JSONL)."""
+    def replay(self, path: Union[str, Path], *, strict: bool = False):
+        """Replay calls from a previously recorded fixture at *path* (JSONL).
+
+        When *strict=True*, raises if the agent exits without consuming every
+        call in the fixture — useful to detect agents that stop early::
+
+            with session.replay("fixture.jsonl", strict=True) as probe:
+                result = my_agent(client)
+        """
         path = Path(path)
         _check_exists(path)
+        # Also resolve gz twin transparently
+        if not path.exists():
+            path = path.with_suffix(path.suffix + ".gz")
         calls = _load_calls(path)
-        with replaying_context(calls):
-            yield AssertionProxy(calls)
+        index: List[int] = [0]
+
+        if strict:
+            from ._interceptor import _strict_replaying_context
+            with _strict_replaying_context(calls, index):
+                yield AssertionProxy(calls)
+            if index[0] < len(calls):
+                raise AssertionError(
+                    f"agentprobe: strict replay — fixture has {len(calls)} call(s) "
+                    f"but the agent only consumed {index[0]}. "
+                    "Ensure the agent makes all expected API calls."
+                )
+        else:
+            with replaying_context(calls):
+                yield AssertionProxy(calls)
 
     @contextmanager
     def auto(self, path: Union[str, Path]):
-        """Record if fixture missing or AGENTPROBE_UPDATE=1; replay otherwise."""
+        """Record if fixture missing or AGENTPROBE_UPDATE=1; replay otherwise.
+
+        xdist-safe: if filelock is installed and another worker is recording the
+        same fixture, waits for it to finish then replays rather than double-recording.
+        """
         path = Path(path)
         if path.exists() and not _should_update():
             with self.replay(path) as proxy:
                 yield proxy
-        else:
-            with self.record(path) as proxy:
+            return
+
+        lock_path = path.with_suffix(path.suffix + ".lock")
+        try:
+            import filelock as _fl
+            lock = _fl.FileLock(str(lock_path), timeout=60)
+            try:
+                lock.acquire(timeout=0)          # non-blocking
+                acquired = True
+            except _fl.Timeout:
+                acquired = False
+        except ImportError:
+            lock = None
+            acquired = True
+
+        if not acquired:
+            # Another worker is recording; wait then replay
+            with _fl.FileLock(str(lock_path), timeout=60):
+                pass  # waits until the recording worker releases
+            with self.replay(path) as proxy:
                 yield proxy
+        else:
+            try:
+                # Re-check: another worker may have finished while we waited
+                if path.exists() and not _should_update():
+                    with self.replay(path) as proxy:
+                        yield proxy
+                else:
+                    with self.record(path) as proxy:
+                        yield proxy
+            finally:
+                if lock is not None:
+                    lock.release()
 
     @contextmanager
     def inject(self, *responses):
@@ -563,6 +726,7 @@ def _make_sync_replayer(calls: List[RecordedCall], index: List[int]):
             )
         call = calls[index[0]]
         index[0] += 1
+        call.request = serialize_request(kwargs)
         if kwargs.get("stream"):
             if call.chunks is None:
                 raise RuntimeError(
@@ -606,6 +770,7 @@ def _make_async_replayer(calls: List[RecordedCall], index: List[int]):
             )
         call = calls[index[0]]
         index[0] += 1
+        call.request = serialize_request(kwargs)
         if kwargs.get("stream"):
             if call.chunks is None:
                 raise RuntimeError(

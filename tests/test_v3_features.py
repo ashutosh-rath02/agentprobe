@@ -234,14 +234,14 @@ def test_diff_json_different(tmp_path):
 def test_show_json_chunk_count_present_for_streaming():
     r = run_cli("show", "--json", "tests/fixtures/streaming_session.jsonl")
     data = json.loads(r.stdout)
-    assert all(entry["chunk_count"] is not None for entry in data)
-    assert all(entry["chunk_count"] > 0 for entry in data)
+    assert all(entry["chunk_count"] is not None for entry in data["calls"])
+    assert all(entry["chunk_count"] > 0 for entry in data["calls"])
 
 
 def test_show_json_chunk_count_null_for_non_streaming():
     r = run_cli("show", "--json", FIXTURE)
     data = json.loads(r.stdout)
-    assert all(entry["chunk_count"] is None for entry in data)
+    assert all(entry["chunk_count"] is None for entry in data["calls"])
 
 
 # ── CLI: fixtures list ────────────────────────────────────────────────────────

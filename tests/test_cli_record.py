@@ -136,14 +136,14 @@ def test_show_json_is_valid_json():
     r = run_cli("show", "--json", FIXTURE)
     assert r.returncode == 0
     data = json.loads(r.stdout)
-    assert isinstance(data, list)
-    assert len(data) == 2
+    assert "calls" in data and "summary" in data
+    assert len(data["calls"]) == 2
 
 
 def test_show_json_contains_expected_fields():
     r = run_cli("show", "--json", FIXTURE)
     data = json.loads(r.stdout)
-    entry = data[0]
+    entry = data["calls"][0]
     assert "model" in entry
     assert "finish_reason" in entry
     assert "prompt_tokens" in entry
@@ -155,17 +155,17 @@ def test_show_json_contains_expected_fields():
 def test_show_json_tool_name_present():
     r = run_cli("show", "--json", FIXTURE)
     data = json.loads(r.stdout)
-    all_tools = [t for entry in data for t in entry["tools_called"]]
+    all_tools = [t for entry in data["calls"] for t in entry["tools_called"]]
     assert "bash" in all_tools
 
 
 def test_show_json_streaming_flag():
     r = run_cli("show", "--json", STREAMING_FIXTURE)
     data = json.loads(r.stdout)
-    assert all(entry["streaming"] is True for entry in data)
+    assert all(entry["streaming"] is True for entry in data["calls"])
 
 
 def test_show_json_non_streaming_flag():
     r = run_cli("show", "--json", FIXTURE)
     data = json.loads(r.stdout)
-    assert all(entry["streaming"] is False for entry in data)
+    assert all(entry["streaming"] is False for entry in data["calls"])
