@@ -221,6 +221,25 @@ class AssertionProxy:
         return [call.request.get("model", "") for call in self._calls]
 
     @property
+    def first_tool_called(self) -> Optional[str]:
+        """Name of the very first tool called in the session, or None."""
+        for call in self._calls:
+            for choice in call.response.get("choices", []):
+                for tc in (choice.get("message", {}).get("tool_calls") or []):
+                    return tc["function"]["name"]
+        return None
+
+    @property
+    def last_tool_called(self) -> Optional[str]:
+        """Name of the last tool called in the session, or None."""
+        result = None
+        for call in self._calls:
+            for choice in call.response.get("choices", []):
+                for tc in (choice.get("message", {}).get("tool_calls") or []):
+                    result = tc["function"]["name"]
+        return result
+
+    @property
     def final_output(self) -> Optional[str]:
         for call in reversed(self._calls):
             for choice in call.response.get("choices", []):
@@ -260,6 +279,52 @@ class AssertionProxy:
                 (usage or {}).get("completion_tokens", 0),
             )
         return round(total, 8)
+
+    # ── Per-call access ───────────────────────────────────────────────────
+
+    def call(self, n: int) -> "AssertionProxy":
+        """Return an AssertionProxy scoped to just the *n*-th call (0-indexed).
+
+        Useful for asserting on a specific iteration::
+
+            probe.call(0).assert_tool_called("bash")
+            probe.call(1).assert_stop_reason("stop")
+        """
+        if n < 0 or n >= len(self._calls):
+            raise IndexError(
+                f"agentprobe: call index {n} out of range "
+                f"(session has {len(self._calls)} call(s))"
+            )
+        return AssertionProxy([self._calls[n]])
+
+    # ── JSON output assertions ────────────────────────────────────────────
+
+    def assert_output_is_json(self) -> "AssertionProxy":
+        """Assert the final text output is valid JSON."""
+        out = self.final_output
+        assert out is not None, "agentprobe: no text output found in session"
+        try:
+            json.loads(out)
+        except json.JSONDecodeError as e:
+            raise AssertionError(
+                f"agentprobe: expected output to be valid JSON, got parse error: {e}\n"
+                f"Output: {out[:200]!r}"
+            ) from None
+        return self
+
+    def assert_output_json_contains(self, **expected: Any) -> "AssertionProxy":
+        """Assert the final output is JSON and contains all *expected* key/value pairs."""
+        self.assert_output_is_json()
+        data = json.loads(self.final_output)  # type: ignore[arg-type]
+        for key, value in expected.items():
+            assert key in data, (
+                f"agentprobe: expected JSON output to contain key '{key}', "
+                f"but keys found: {list(data.keys())}"
+            )
+            assert data[key] == value, (
+                f"agentprobe: expected JSON['{key}'] == {value!r}, got {data[key]!r}"
+            )
+        return self
 
     # ── Helpers ───────────────────────────────────────────────────────────
 

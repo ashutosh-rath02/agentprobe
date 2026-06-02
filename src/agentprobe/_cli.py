@@ -171,6 +171,19 @@ def cmd_diff_json(args):
         if a_tools != b_tools:
             differences.append({"call": i + 1, "type": "tools", "a": a_tools, "b": b_tools})
 
+        # Compare tool arguments per tool call
+        a_args = {tc["function"]["name"]: tc["function"].get("arguments") for ch in a_choices for tc in (ch["message"].get("tool_calls") or [])}
+        b_args = {tc["function"]["name"]: tc["function"].get("arguments") for ch in b_choices for tc in (ch["message"].get("tool_calls") or [])}
+        for name in set(a_args) & set(b_args):
+            if a_args[name] != b_args[name]:
+                differences.append({"call": i + 1, "type": "tool_arguments", "tool": name, "a": a_args[name], "b": b_args[name]})
+
+        # Compare text content
+        a_content = next((ch["message"].get("content") for ch in reversed(a_choices) if ch["message"].get("content")), None)
+        b_content = next((ch["message"].get("content") for ch in reversed(b_choices) if ch["message"].get("content")), None)
+        if a_content != b_content:
+            differences.append({"call": i + 1, "type": "content", "a": a_content, "b": b_content})
+
         a_in = (a.get("response", {}).get("usage") or {}).get("prompt_tokens", 0)
         b_in = (b.get("response", {}).get("usage") or {}).get("prompt_tokens", 0)
         if a_in != b_in:
@@ -231,7 +244,9 @@ def cmd_fixtures_list(args):
 
 
 def cmd_validate(args):
-    """Validate that a fixture file is well-formed and can be deserialized."""
+    """Validate fixture structure and attempt full Pydantic deserialization."""
+    import openai.types.chat as oai
+
     p = Path(args.fixture)
     if not p.exists():
         print(f"agentprobe: file not found: {args.fixture}", file=sys.stderr)
@@ -251,15 +266,24 @@ def cmd_validate(args):
             if field not in data:
                 errors.append(f"line {i}: missing '{field}' field")
 
+        # Attempt Pydantic deserialization of the assembled response
         resp = data.get("response", {})
-        if "choices" not in resp:
-            errors.append(f"line {i}: response missing 'choices'")
-        elif not isinstance(resp["choices"], list) or not resp["choices"]:
-            errors.append(f"line {i}: 'choices' must be a non-empty list")
+        try:
+            oai.ChatCompletion.model_validate(resp)
+        except Exception as e:
+            errors.append(f"line {i}: response failed Pydantic validation — {e}")
 
+        # Validate each streaming chunk if present
         chunks = data.get("chunks")
-        if chunks is not None and not isinstance(chunks, list):
-            errors.append(f"line {i}: 'chunks' must be a list")
+        if chunks is not None:
+            if not isinstance(chunks, list):
+                errors.append(f"line {i}: 'chunks' must be a list")
+            else:
+                for j, chunk in enumerate(chunks):
+                    try:
+                        oai.ChatCompletionChunk.model_validate(chunk)
+                    except Exception as e:
+                        errors.append(f"line {i} chunk {j}: Pydantic validation failed — {e}")
 
     if errors:
         for err in errors:
@@ -267,7 +291,7 @@ def cmd_validate(args):
         print(f"\nagentprobe: {len(errors)} error(s) in {args.fixture}", file=sys.stderr)
         sys.exit(1)
 
-    streaming = sum(1 for l in lines if '"chunks"' in l)
+    streaming = sum(1 for d in [json.loads(l) for l in lines] if d.get("chunks"))
     print(f"agentprobe: {args.fixture} OK  ({len(lines)} call(s), {streaming} streaming)")
 
 
