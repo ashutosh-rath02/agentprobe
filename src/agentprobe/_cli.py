@@ -136,6 +136,72 @@ def cmd_diff(args):
         sys.exit(1)
 
 
+def cmd_validate(args):
+    """Validate that a fixture file is well-formed and can be deserialized."""
+    p = Path(args.fixture)
+    if not p.exists():
+        print(f"agentprobe: file not found: {args.fixture}", file=sys.stderr)
+        sys.exit(1)
+
+    lines = [l for l in p.read_text().splitlines() if l.strip()]
+    errors = []
+
+    for i, line in enumerate(lines, 1):
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError as e:
+            errors.append(f"line {i}: invalid JSON — {e}")
+            continue
+
+        for field in ("request", "response"):
+            if field not in data:
+                errors.append(f"line {i}: missing '{field}' field")
+
+        resp = data.get("response", {})
+        if "choices" not in resp:
+            errors.append(f"line {i}: response missing 'choices'")
+        elif not isinstance(resp["choices"], list) or not resp["choices"]:
+            errors.append(f"line {i}: 'choices' must be a non-empty list")
+
+        chunks = data.get("chunks")
+        if chunks is not None and not isinstance(chunks, list):
+            errors.append(f"line {i}: 'chunks' must be a list")
+
+    if errors:
+        for err in errors:
+            print(f"  ERROR: {err}", file=sys.stderr)
+        print(f"\nagentprobe: {len(errors)} error(s) in {args.fixture}", file=sys.stderr)
+        sys.exit(1)
+
+    streaming = sum(1 for l in lines if '"chunks"' in l)
+    print(f"agentprobe: {args.fixture} OK  ({len(lines)} call(s), {streaming} streaming)")
+
+
+def cmd_init(args):
+    """Scaffold tests/fixtures/ and a sample conftest.py."""
+    fixtures_dir = Path("tests/fixtures")
+    fixtures_dir.mkdir(parents=True, exist_ok=True)
+    print(f"agentprobe: created {fixtures_dir}/")
+
+    conftest = Path("tests/conftest.py")
+    if conftest.exists():
+        print(f"agentprobe: {conftest} already exists, skipping")
+    else:
+        conftest.write_text(
+            "# tests/conftest.py\n"
+            "# agentprobe fixtures live in tests/fixtures/\n"
+            "# Re-record with: pytest --agentprobe-update\n"
+        )
+        print(f"agentprobe: created {conftest}")
+
+    print("\nagentprobe: ready!  Record your first fixture:")
+    print("  agentprobe record my_agent.py tests/fixtures/my_session.jsonl")
+    print("\nThen replay in tests:")
+    print("  with session.replay('tests/fixtures/my_session.jsonl') as probe:")
+    print("      result = my_agent(client)")
+    print("      probe.assert_tool_called('bash')")
+
+
 def cmd_record(args):
     """Run a Python script and capture all OpenAI chat.completions calls to a JSONL fixture."""
     import runpy
@@ -221,6 +287,13 @@ def main():
         help="Output JSONL path (default: agentprobe_session.jsonl)",
     )
     p_record.set_defaults(func=cmd_record)
+
+    p_validate = sub.add_parser("validate", help="Validate a fixture file for correctness")
+    p_validate.add_argument("fixture", help="Path to .jsonl fixture file")
+    p_validate.set_defaults(func=cmd_validate)
+
+    p_init = sub.add_parser("init", help="Scaffold tests/fixtures/ and a sample conftest.py")
+    p_init.set_defaults(func=cmd_init)
 
     args = parser.parse_args()
     args.func(args)
