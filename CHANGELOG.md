@@ -4,6 +4,21 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.22.0] — 2026-06-03
+
+### Added
+
+**AssertionProxy + AnthropicAssertionProxy**
+- `probe.assert_min_tool_calls(n)` — symmetric counterpart to `assert_max_tool_calls`; fails if the total tool invocation count falls below *n*, catching agents that silently skip tool use
+- `probe.assert_output_char_count(min, max)` — character-level bounds on the final output; complements `assert_output_word_count` for byte-precise length checks
+- `probe.assert_tool_result_contains(name, text)` — asserts at least one result fed back for *name* contains *text*; checks `role: "tool"` messages (OpenAI) or `tool_result` blocks (Anthropic), not the inputs sent to the tool — the first assertion to validate what comes *back* from tool calls
+
+**CLI**
+- `agentprobe show --tool-results` — inline tool result messages in the human-readable `show` output so you can see the full request/response cycle without inspecting raw JSON
+- `agentprobe fixtures --tool-names [dir]` — list all unique tool names called across every fixture in a directory; useful for auditing what tools an agent actually invokes
+
+---
+
 ## [0.21.0] — 2026-06-03
 
 ### Added

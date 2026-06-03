@@ -685,6 +685,36 @@ class AssertionProxy:
             f"Actual inputs: {inputs}"
         )
 
+    def assert_tool_result_contains(self, tool_name: str, text: str) -> "AssertionProxy":
+        """Assert at least one result returned for *tool_name* contains *text*.
+
+        Checks the ``role: "tool"`` messages fed back to the model, not the
+        inputs sent to the tool.  Useful for verifying that downstream tool
+        output actually contains expected data::
+
+            probe.assert_tool_result_contains("search", "agentprobe")
+        """
+        # Build id → name map from all responses
+        id_to_name: dict = {}
+        for call in self._calls:
+            for choice in call.response.get("choices", []):
+                for tc in (choice.get("message", {}).get("tool_calls") or []):
+                    id_to_name[tc["id"]] = tc["function"]["name"]
+
+        for call in self._calls:
+            for msg in (call.request.get("messages") or []):
+                if msg.get("role") != "tool":
+                    continue
+                if id_to_name.get(msg.get("tool_call_id", "")) != tool_name:
+                    continue
+                content = msg.get("content") or ""
+                if text in content:
+                    return self
+
+        raise AssertionError(
+            f"agentprobe: no result for tool '{tool_name}' contained {text!r}"
+        )
+
     def assert_final_tool_not_called(self, tool_name: str) -> "AssertionProxy":
         """Assert the last API call did not invoke *tool_name*.
 
@@ -722,6 +752,25 @@ class AssertionProxy:
         if max_words is not None:
             assert words <= max_words, (
                 f"agentprobe: output has {words} word(s), expected at most {max_words}"
+            )
+        return self
+
+    def assert_output_char_count(self, min_chars: int = 0,
+                                 max_chars: Optional[int] = None) -> "AssertionProxy":
+        """Assert the final output character count is within [*min_chars*, *max_chars*].
+
+        Complements ``assert_output_word_count`` for byte-precise length checks::
+
+            probe.assert_output_char_count(10, 2000)
+        """
+        text = self.final_output or ""
+        chars = len(text)
+        assert chars >= min_chars, (
+            f"agentprobe: output has {chars} char(s), expected at least {min_chars}"
+        )
+        if max_chars is not None:
+            assert chars <= max_chars, (
+                f"agentprobe: output has {chars} char(s), expected at most {max_chars}"
             )
         return self
 
@@ -936,6 +985,24 @@ class AssertionProxy:
         )
         assert total <= n, (
             f"agentprobe: total tool calls {total} exceeds limit {n}"
+        )
+        return self
+
+    def assert_min_tool_calls(self, n: int) -> "AssertionProxy":
+        """Assert the total number of tool calls across all iterations is at least *n*.
+
+        Symmetric counterpart to ``assert_max_tool_calls``; catches agents that
+        silently skip tool use when they should be calling tools::
+
+            probe.assert_min_tool_calls(1)  # agent must use at least one tool
+        """
+        total = sum(
+            len(choice.get("message", {}).get("tool_calls") or [])
+            for call in self._calls
+            for choice in call.response.get("choices", [])
+        )
+        assert total >= n, (
+            f"agentprobe: total tool calls {total} is below minimum {n}"
         )
         return self
 
@@ -2336,6 +2403,43 @@ class AnthropicAssertionProxy:
             f"Actual inputs: {inputs}"
         )
 
+    def assert_tool_result_contains(self, tool_name: str, text: str) -> "AnthropicAssertionProxy":
+        """Assert at least one result returned for *tool_name* contains *text*.
+
+        Checks ``tool_result`` blocks fed back in user messages, not inputs sent to the tool.
+        """
+        # Build id → name map from all responses
+        id_to_name: dict = {}
+        for call in self._calls:
+            for block in (call.response.get("content") or []):
+                if block.get("type") == "tool_use":
+                    id_to_name[block["id"]] = block["name"]
+
+        for call in self._calls:
+            for msg in (call.request.get("messages") or []):
+                if msg.get("role") != "user":
+                    continue
+                content = msg.get("content") or []
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not isinstance(block, dict) or block.get("type") != "tool_result":
+                        continue
+                    if id_to_name.get(block.get("tool_use_id", "")) != tool_name:
+                        continue
+                    result_content = block.get("content") or ""
+                    if isinstance(result_content, list):
+                        result_content = " ".join(
+                            b.get("text", "") for b in result_content
+                            if isinstance(b, dict)
+                        )
+                    if text in result_content:
+                        return self
+
+        raise AssertionError(
+            f"agentprobe: no result for tool '{tool_name}' contained {text!r}"
+        )
+
     def assert_final_tool_not_called(self, tool_name: str) -> "AnthropicAssertionProxy":
         """Assert the last API call did not invoke *tool_name*."""
         if not self._calls:
@@ -2358,6 +2462,20 @@ class AnthropicAssertionProxy:
         if max_words is not None:
             assert words <= max_words, (
                 f"agentprobe: output has {words} word(s), expected at most {max_words}"
+            )
+        return self
+
+    def assert_output_char_count(self, min_chars: int = 0,
+                                 max_chars: Optional[int] = None) -> "AnthropicAssertionProxy":
+        """Assert the final output character count is within [*min_chars*, *max_chars*]."""
+        text = self.final_output or ""
+        chars = len(text)
+        assert chars >= min_chars, (
+            f"agentprobe: output has {chars} char(s), expected at least {min_chars}"
+        )
+        if max_chars is not None:
+            assert chars <= max_chars, (
+                f"agentprobe: output has {chars} char(s), expected at most {max_chars}"
             )
         return self
 
@@ -2509,6 +2627,18 @@ class AnthropicAssertionProxy:
         )
         assert total <= n, (
             f"agentprobe: total tool calls {total} exceeds limit {n}"
+        )
+        return self
+
+    def assert_min_tool_calls(self, n: int) -> "AnthropicAssertionProxy":
+        """Assert the total number of tool calls across all iterations is at least *n*."""
+        total = sum(
+            1 for call in self._calls
+            for block in (call.response.get("content") or [])
+            if block.get("type") == "tool_use"
+        )
+        assert total >= n, (
+            f"agentprobe: total tool calls {total} is below minimum {n}"
         )
         return self
 

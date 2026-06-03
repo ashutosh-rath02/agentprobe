@@ -70,6 +70,30 @@ def _filter_calls(calls: list, model_filter: str | None) -> list:
     return [c for c in calls if c.get("request", {}).get("model") == model_filter]
 
 
+def _fmt_tool_results(call: dict, is_anthropic: bool) -> list[str]:
+    """Return formatted lines for tool results embedded in a call's request messages."""
+    lines = []
+    for msg in (call.get("request", {}).get("messages") or []):
+        if is_anthropic:
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content") or []
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    result = block.get("content") or ""
+                    if isinstance(result, list):
+                        result = " ".join(b.get("text", "") for b in result if isinstance(b, dict))
+                    lines.append(f"  [tool_result] {str(result)[:120]}{'...' if len(str(result)) > 120 else ''}")
+        else:
+            if msg.get("role") != "tool":
+                continue
+            content = msg.get("content") or ""
+            lines.append(f"  [tool_result] {content[:120]}{'...' if len(content) > 120 else ''}")
+    return lines
+
+
 def cmd_show(args):
     calls = _filter_calls(_load(args.fixture), getattr(args, "model", None))
     max_show = getattr(args, "calls", None)
@@ -80,6 +104,7 @@ def cmd_show(args):
     if meta:
         meta_str = f"  [v{meta.get('agentprobe_version', '?')} recorded {meta.get('recorded_at', '?')}]"
     print(f"fixture: {args.fixture}  ({len(calls)} call(s)){meta_str}\n")
+    show_results = getattr(args, "tool_results", False)
     total_in = 0
     total_out = 0
     for i, call in enumerate(calls, 1):
@@ -90,7 +115,8 @@ def cmd_show(args):
         ms_str = f"  {ms:.0f}ms" if ms else ""
         streaming = " [stream]" if call.get("chunks") else ""
         model = resp.get("model") or req.get("model", "?")
-        if _is_anthropic_response(resp):
+        is_anthropic = _is_anthropic_response(resp)
+        if is_anthropic:
             stop = resp.get("stop_reason", "?")
             in_tok = usage.get("input_tokens", "?")
             out_tok = usage.get("output_tokens", "?")
@@ -98,6 +124,9 @@ def cmd_show(args):
             total_out += out_tok if isinstance(out_tok, int) else 0
             print(f"-- Call {i}/{len(calls)}  model={model}  stop={stop}"
                   f"  in={in_tok} out={out_tok}{ms_str}{streaming}")
+            if show_results:
+                for line in _fmt_tool_results(call, is_anthropic=True):
+                    print(line)
             for line in _fmt_anthropic_content(resp):
                 print(line)
         else:
@@ -109,6 +138,9 @@ def cmd_show(args):
             total_out += out_tok if isinstance(out_tok, int) else 0
             print(f"-- Call {i}/{len(calls)}  model={model}  stop={finish}"
                   f"  in={in_tok} out={out_tok}{ms_str}{streaming}")
+            if show_results:
+                for line in _fmt_tool_results(call, is_anthropic=False):
+                    print(line)
             for choice in choices:
                 for line in _fmt_choice(choice):
                     print(line)
@@ -129,6 +161,42 @@ def cmd_show(args):
                 print(err_captured.rstrip())
         else:
             print("\n(no captured stdout in _meta — record with --capture-stdout)")
+
+
+def cmd_fixtures_tool_names(args):
+    """List all unique tool names called across fixtures in a directory."""
+    directory = Path(args.directory)
+    if not directory.is_dir():
+        print(f"agentprobe: not a directory: {args.directory}", file=sys.stderr)
+        sys.exit(1)
+
+    tool_names: set = set()
+    for f in sorted(directory.rglob("*.jsonl")) + sorted(directory.rglob("*.jsonl.gz")):
+        try:
+            calls = _load(str(f))
+        except Exception:
+            continue
+        for c in calls:
+            resp = c.get("response", {})
+            if _is_anthropic_response(resp):
+                for block in (resp.get("content") or []):
+                    if block.get("type") == "tool_use":
+                        tool_names.add(block["name"])
+            else:
+                for choice in (resp.get("choices") or []):
+                    for tc in (choice.get("message", {}).get("tool_calls") or []):
+                        tool_names.add(tc["function"]["name"])
+
+    if getattr(args, "json", False):
+        print(json.dumps(sorted(tool_names)))
+    else:
+        if not tool_names:
+            print(f"agentprobe: no tool calls found in {args.directory}")
+            return
+        print(f"Tool names in {args.directory}:\n")
+        for name in sorted(tool_names):
+            print(f"  {name}")
+        print(f"\n{len(tool_names)} unique tool(s)")
 
 
 def cmd_show_json(args):
@@ -1554,6 +1622,8 @@ def main():
                         help="Also print captured stdout/stderr from _meta header")
     p_show.add_argument("--calls", type=int, metavar="N",
                         help="Show only first N calls (negative = last N)")
+    p_show.add_argument("--tool-results", dest="tool_results", action="store_true",
+                        help="Also print tool result messages fed back to the model")
     p_show.set_defaults(func=lambda a: cmd_show_json(a) if a.json else cmd_show(a))
 
     p_diff = sub.add_parser("diff", help="Compare two session fixtures")
@@ -1594,6 +1664,8 @@ def main():
                         help="Print the count of fixture files")
     p_list.add_argument("--by-token-count", dest="by_token_count", action="store_true",
                         help="List fixtures sorted by total token usage (descending)")
+    p_list.add_argument("--tool-names", dest="tool_names", action="store_true",
+                        help="List all unique tool names called across fixtures")
     p_list.set_defaults(func=lambda a: cmd_fixtures_clean(a) if a.clean else (
         cmd_stats_by_date(a) if a.by_date else (
         cmd_fixtures_orphaned(a) if a.orphaned else (
@@ -1602,7 +1674,8 @@ def main():
         cmd_fixtures_by_age(a) if a.age_days else (
         cmd_fixtures_delete_old(a) if a.delete_old is not None else (
         cmd_fixtures_count(a) if a.count else (
-        cmd_fixtures_by_token_count(a) if a.by_token_count else cmd_fixtures_list(a))))))))))
+        cmd_fixtures_by_token_count(a) if a.by_token_count else (
+        cmd_fixtures_tool_names(a) if a.tool_names else cmd_fixtures_list(a)))))))))))
 
     p_stats = sub.add_parser("stats", help="Aggregate stats across all fixtures in a directory")
     p_stats.add_argument("directory", nargs="?", default="tests/fixtures",
