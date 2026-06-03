@@ -379,6 +379,77 @@ class AssertionProxy:
 
         return self
 
+    def assert_response_latency_percentile(self, p: float, ms: float) -> "AssertionProxy":
+        """Assert the *p*-th percentile of recorded call durations is under *ms*.
+
+        ``p`` is 0–100. Requires at least one call with a recorded ``duration_ms``::
+
+            probe.assert_response_latency_percentile(95, 3000)  # p95 under 3 s
+        """
+        durations = sorted(c.duration_ms for c in self._calls if c.duration_ms is not None)
+        if not durations:
+            return self
+        idx = max(0, int(len(durations) * p / 100) - 1) if p < 100 else len(durations) - 1
+        value = durations[idx]
+        assert value <= ms, (
+            f"agentprobe: p{p:.0f} latency {value:.1f}ms exceeds limit {ms:.1f}ms"
+        )
+        return self
+
+    def assert_all_responses_under_tokens(self, n: int) -> "AssertionProxy":
+        """Assert every individual API call returned fewer than *n* total tokens.
+
+        Complements ``assert_max_tokens`` which checks the session total::
+
+            probe.assert_all_responses_under_tokens(1000)  # each call under 1K tokens
+        """
+        for i, call in enumerate(self._calls):
+            usage = call.response.get("usage") or {}
+            total = (usage.get("prompt_tokens") or 0) + (usage.get("completion_tokens") or 0)
+            if total > 0:
+                assert total <= n, (
+                    f"agentprobe: call {i + 1} used {total} token(s), exceeds per-call limit {n}"
+                )
+        return self
+
+    def assert_tool_arg_type(self, tool_name: str, key: str,
+                             expected_type: str) -> "AssertionProxy":
+        """Assert all calls to *tool_name* have ``input[key]`` of type *expected_type*.
+
+        *expected_type* is a string: ``"str"``, ``"int"``, ``"float"``, ``"bool"``,
+        ``"list"``, ``"dict"``, or ``"null"``::
+
+            probe.assert_tool_arg_type("search", "page", "int")
+        """
+        _type_map = {
+            "str": str, "int": int, "float": float, "bool": bool,
+            "list": list, "dict": dict, "null": type(None),
+        }
+        if expected_type not in _type_map:
+            raise ValueError(
+                f"agentprobe: unknown type {expected_type!r}. "
+                f"Supported: {sorted(_type_map)}"
+            )
+        expected = _type_map[expected_type]
+        inputs = self._tool_inputs(tool_name)
+        assert inputs, f"agentprobe: tool '{tool_name}' was never called"
+        for i, inp in enumerate(inputs):
+            assert key in inp, (
+                f"agentprobe: tool '{tool_name}' call {i + 1} missing key '{key}'"
+            )
+            actual = type(inp[key])
+            if expected_type == "bool":
+                assert isinstance(inp[key], bool), (
+                    f"agentprobe: tool '{tool_name}' call {i + 1} '{key}' is {actual.__name__}, "
+                    f"expected bool"
+                )
+            else:
+                assert isinstance(inp[key], expected) and not (expected_type == "int" and isinstance(inp[key], bool)), (
+                    f"agentprobe: tool '{tool_name}' call {i + 1} '{key}' is {actual.__name__}, "
+                    f"expected {expected_type}"
+                )
+        return self
+
     def assert_no_empty_system_prompt(self) -> "AssertionProxy":
         """Assert every call that included a system message had non-empty content.
 
@@ -2036,6 +2107,58 @@ class AnthropicAssertionProxy:
                 f"agentprobe: call {i + 1} returned an empty response "
                 f"(no text blocks and no tool_use blocks)"
             )
+        return self
+
+    def assert_response_latency_percentile(self, p: float, ms: float) -> "AnthropicAssertionProxy":
+        """Assert the *p*-th percentile of recorded call durations is under *ms*."""
+        durations = sorted(c.duration_ms for c in self._calls if c.duration_ms is not None)
+        if not durations:
+            return self
+        idx = max(0, int(len(durations) * p / 100) - 1) if p < 100 else len(durations) - 1
+        value = durations[idx]
+        assert value <= ms, (
+            f"agentprobe: p{p:.0f} latency {value:.1f}ms exceeds limit {ms:.1f}ms"
+        )
+        return self
+
+    def assert_all_responses_under_tokens(self, n: int) -> "AnthropicAssertionProxy":
+        """Assert every individual API call returned fewer than *n* total tokens."""
+        for i, call in enumerate(self._calls):
+            usage = call.response.get("usage") or {}
+            total = (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0)
+            if total > 0:
+                assert total <= n, (
+                    f"agentprobe: call {i + 1} used {total} token(s), exceeds per-call limit {n}"
+                )
+        return self
+
+    def assert_tool_arg_type(self, tool_name: str, key: str,
+                             expected_type: str) -> "AnthropicAssertionProxy":
+        """Assert all calls to *tool_name* have ``input[key]`` of type *expected_type*."""
+        _type_map = {
+            "str": str, "int": int, "float": float, "bool": bool,
+            "list": list, "dict": dict, "null": type(None),
+        }
+        if expected_type not in _type_map:
+            raise ValueError(f"agentprobe: unknown type {expected_type!r}.")
+        expected = _type_map[expected_type]
+        inputs = self._tool_inputs(tool_name)
+        assert inputs, f"agentprobe: tool '{tool_name}' was never called"
+        for i, inp in enumerate(inputs):
+            assert key in inp, (
+                f"agentprobe: tool '{tool_name}' call {i + 1} missing key '{key}'"
+            )
+            actual = type(inp[key])
+            if expected_type == "bool":
+                assert isinstance(inp[key], bool), (
+                    f"agentprobe: tool '{tool_name}' call {i + 1} '{key}' is {actual.__name__}, "
+                    f"expected bool"
+                )
+            else:
+                assert isinstance(inp[key], expected) and not (expected_type == "int" and isinstance(inp[key], bool)), (
+                    f"agentprobe: tool '{tool_name}' call {i + 1} '{key}' is {actual.__name__}, "
+                    f"expected {expected_type}"
+                )
         return self
 
     def assert_no_empty_system_prompt(self) -> "AnthropicAssertionProxy":

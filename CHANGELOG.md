@@ -4,6 +4,21 @@ All notable changes to `pytest-agentprobe` are documented here.
 
 ---
 
+## [0.21.0] — 2026-06-03
+
+### Added
+
+**AssertionProxy + AnthropicAssertionProxy**
+- `probe.assert_response_latency_percentile(p, ms)` — asserts the *p*-th percentile (0–100) of recorded call durations is under *ms*; useful for p95/p99 SLA checks across multi-call sessions
+- `probe.assert_all_responses_under_tokens(n)` — asserts every individual API call used fewer than *n* total tokens; complements `assert_max_tokens` which checks the session total
+- `probe.assert_tool_arg_type(name, key, type)` — asserts all calls to *name* have `input[key]` of the given Python type string (`"str"`, `"int"`, `"float"`, `"bool"`, `"list"`, `"dict"`, `"null"`); correctly distinguishes `bool` from `int` (since `bool` is a subclass of `int` in Python)
+
+**CLI**
+- `agentprobe stats --latency-percentile N` — report pN latency (0–100) across all calls in a fixture directory; `--json` for structured output
+- `agentprobe fixtures --by-token-count [dir]` — list fixtures sorted by total token usage (descending); useful for identifying the most expensive sessions
+
+---
+
 ## [0.20.0] — 2026-06-02
 
 ### Added

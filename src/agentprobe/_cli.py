@@ -1140,6 +1140,79 @@ def cmd_stats_by_model(args):
                   f"{e['input_tokens']:>8,} in  {e['output_tokens']:>8,} out  ${e['cost']:.4f}")
 
 
+def cmd_stats_latency_percentile(args):
+    """Report pN latency across all calls in a directory."""
+    directory = Path(args.directory)
+    if not directory.is_dir():
+        print(f"agentprobe: not a directory: {args.directory}", file=sys.stderr)
+        sys.exit(1)
+
+    p = args.latency_percentile
+    if not (0 <= p <= 100):
+        print("agentprobe: --latency-percentile must be between 0 and 100", file=sys.stderr)
+        sys.exit(1)
+
+    durations = []
+    for f in sorted(directory.rglob("*.jsonl")) + sorted(directory.rglob("*.jsonl.gz")):
+        try:
+            calls = _load(str(f))
+        except Exception:
+            continue
+        for c in calls:
+            d = c.get("duration_ms")
+            if d is not None:
+                durations.append(d)
+
+    if not durations:
+        print(f"agentprobe: no calls with duration_ms recorded in {args.directory}")
+        return
+
+    durations.sort()
+    idx = max(0, int(len(durations) * p / 100) - 1) if p < 100 else len(durations) - 1
+    value = durations[idx]
+
+    if getattr(args, "json", False):
+        print(json.dumps({"percentile": p, "value_ms": value, "sample_size": len(durations)}))
+    else:
+        print(f"p{p:.0f} latency across {len(durations)} call(s) in {args.directory}: {value:.1f}ms")
+
+
+def cmd_fixtures_by_token_count(args):
+    """List fixture files sorted by total token count (descending)."""
+    directory = Path(args.directory)
+    if not directory.is_dir():
+        print(f"agentprobe: not a directory: {args.directory}", file=sys.stderr)
+        sys.exit(1)
+
+    fixtures = []
+    for f in sorted(directory.rglob("*.jsonl")) + sorted(directory.rglob("*.jsonl.gz")):
+        try:
+            calls = _load(str(f))
+        except Exception:
+            continue
+        total_tokens = 0
+        for c in calls:
+            usage = (c.get("response") or {}).get("usage") or {}
+            if _is_anthropic_response(c.get("response") or {}):
+                total_tokens += (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0)
+            else:
+                total_tokens += (usage.get("prompt_tokens") or 0) + (usage.get("completion_tokens") or 0)
+        fixtures.append({"file": str(f), "calls": len(calls), "total_tokens": total_tokens})
+
+    fixtures.sort(key=lambda x: x["total_tokens"], reverse=True)
+
+    if getattr(args, "json", False):
+        print(json.dumps(fixtures, indent=2))
+    else:
+        if not fixtures:
+            print(f"agentprobe: no fixtures found in {args.directory}")
+            return
+        print(f"Fixtures by token count ({args.directory}):\n")
+        for entry in fixtures:
+            print(f"  {entry['total_tokens']:>8,} tokens  {entry['calls']:>3} call(s)  {entry['file']}")
+        print(f"\n{len(fixtures)} fixture(s)")
+
+
 def cmd_replay(args):
     """Run a Python script in pure replay mode against a saved fixture."""
     import runpy, time
@@ -1519,6 +1592,8 @@ def main():
                         help="Confirm destructive operations like --delete-old")
     p_list.add_argument("--count", action="store_true",
                         help="Print the count of fixture files")
+    p_list.add_argument("--by-token-count", dest="by_token_count", action="store_true",
+                        help="List fixtures sorted by total token usage (descending)")
     p_list.set_defaults(func=lambda a: cmd_fixtures_clean(a) if a.clean else (
         cmd_stats_by_date(a) if a.by_date else (
         cmd_fixtures_orphaned(a) if a.orphaned else (
@@ -1526,7 +1601,8 @@ def main():
         cmd_fixtures_by_label(a) if a.label else (
         cmd_fixtures_by_age(a) if a.age_days else (
         cmd_fixtures_delete_old(a) if a.delete_old is not None else (
-        cmd_fixtures_count(a) if a.count else cmd_fixtures_list(a)))))))))
+        cmd_fixtures_count(a) if a.count else (
+        cmd_fixtures_by_token_count(a) if a.by_token_count else cmd_fixtures_list(a))))))))))
 
     p_stats = sub.add_parser("stats", help="Aggregate stats across all fixtures in a directory")
     p_stats.add_argument("directory", nargs="?", default="tests/fixtures",
@@ -1534,9 +1610,12 @@ def main():
     p_stats.add_argument("--json", action="store_true", help="Output as machine-readable JSON")
     p_stats.add_argument("--by-date", action="store_true", help="Group stats by recording date")
     p_stats.add_argument("--by-model", action="store_true", help="Group stats by model name")
+    p_stats.add_argument("--latency-percentile", dest="latency_percentile", type=float,
+                         metavar="N", help="Report pN latency (0–100) across all calls")
     p_stats.set_defaults(func=lambda a: (
         cmd_stats_by_date(a) if a.by_date else
         cmd_stats_by_model(a) if a.by_model else
+        cmd_stats_latency_percentile(a) if a.latency_percentile is not None else
         cmd_fixtures_stats(a)
     ))
 
